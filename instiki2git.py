@@ -92,7 +92,7 @@ def load_and_commit_new_revisions(repo_path, db_config, web_id,
   default=os.path.expanduser("~/.instiki2git"),
   help="Path to configuration file.")
 @click.option("--latest-revision-file",
-  type=click.Path(exists=True),
+  type=click.Path(),
   default="/tmp/instiki2git",
   help="Path to a file containing the ID of the last committed revision.")
 def cli(config_file, latest_revision_file):
@@ -105,8 +105,18 @@ def cli(config_file, latest_revision_file):
     "password": config_parser.get("database", "password"),
     "charset": config_parser.get("database", "charset")}
   web_id = config_parser.get("web", "id")
-  with click.open_file(latest_revision_file, "rw") as f:
-    latest_revision_id = int(f.read())
+  if os.path.exists(latest_revision_file):
+    with click.open_file(latest_revision_file, "rw") as f:
+      try:
+        latest_revision_id = int(f.read())
+      except ValueError:
+        latest_revision_id = 0
+      latest_revision_id = load_and_commit_new_revisions(repo_path, db_config,
+        web_id, latest_revision_id)
+      f.write(str(latest_revision_id))
+  else:
+    latest_revision_id = 0
     latest_revision_id = load_and_commit_new_revisions(repo_path, db_config,
-      web_id, latest_revision_id)
-    f.write(latest_revision_id)
+        web_id, latest_revision_id)
+    with click.open_file(latest_revision_file, "w+") as f:
+      f.write(str(latest_revision_id))
