@@ -52,7 +52,7 @@ def load_new_revisions(db_config, web_id, latest_revision_id=0):
     db_conn.close()
   return revisions
 
-def commit_revisions_to_repo(repo, revisions):
+def commit_revisions_to_repo(repo, revisions, latest_revision_file):
   """
   Commits a set of revisions to the given git repository.
 
@@ -62,11 +62,10 @@ def commit_revisions_to_repo(repo, revisions):
   Output:
     * latest_revision_id (str): the latest revision id that was committed
   """
-  latest_revision_id = None
   for rev in revisions:
     with open("%s/%s" % (repo.path, rev["page_id"]), "wb") as f:
-      f.write(bytes(rev["content"], "utf8"))
-    repo.stage([bytes("%d" % rev["page_id"], "utf8")])
+      f.write(rev["content"].encode("utf8"))
+    repo.stage(["%d" % rev["page_id"]])
     commit_msg = """Revision ID: %s
 Revision date: %s
 Page name: %s
@@ -75,16 +74,27 @@ IP address: %s""" % (rev["id"], rev["revised_at"], rev["name"], rev["author"],
       rev["ip"])
     commit_author = "%s <>" % rev["author"]
     
-    repo.do_commit(bytes(commit_msg, "utf8"), bytes(commit_author, "utf8"))
-    latest_revision_id = rev["id"]
-  return latest_revision_id
+    repo.do_commit(commit_msg.encode("utf8"), commit_author.encode("utf8"))
+    with click.open_file(latest_revision_file, 'w') as f_:
+      f_.write(str(rev["id"]))
+
+def read_latest_revision_id(latest_revision_file):
+  if os.path.exists(latest_revision_file):
+    with open(latest_revision_file, 'r') as f:
+      try:
+        latest_revision_id = int(f.read())
+      except ValueError:
+        latest_revision_id = 0
+  else:
+    return 0
 
 def load_and_commit_new_revisions(repo_path, db_config, web_id,
-  latest_revision_id=0):
-  repo = load_repo(repo_path)
+  latest_revision_file):
+  latest_revision_id = read_latest_revision_id(latest_revision_file)
   revs = load_new_revisions(db_config, web_id, latest_revision_id)
-  latest_revision_id = commit_revisions_to_repo(repo, revs)
-  return latest_revision_id
+
+  repo = load_repo(repo_path)
+  commit_revisions_to_repo(repo, revs, latest_revision_file)
 
 @click.command()
 @click.option("--config-file",
@@ -105,18 +115,5 @@ def cli(config_file, latest_revision_file):
     "password": config_parser.get("database", "password"),
     "charset": config_parser.get("database", "charset")}
   web_id = config_parser.get("web", "id")
-  if os.path.exists(latest_revision_file):
-    with click.open_file(latest_revision_file, "rw") as f:
-      try:
-        latest_revision_id = int(f.read())
-      except ValueError:
-        latest_revision_id = 0
-      latest_revision_id = load_and_commit_new_revisions(repo_path, db_config,
-        web_id, latest_revision_id)
-      f.write(str(latest_revision_id))
-  else:
-    latest_revision_id = 0
-    latest_revision_id = load_and_commit_new_revisions(repo_path, db_config,
-        web_id, latest_revision_id)
-    with click.open_file(latest_revision_file, "w+") as f:
-      f.write(str(latest_revision_id))
+  load_and_commit_new_revisions(repo_path, db_config, web_id,
+    latest_revision_file)
