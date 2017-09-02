@@ -82,9 +82,9 @@ def read_latest_revision_id(latest_revision_file):
   if os.path.exists(latest_revision_file):
     with open(latest_revision_file, 'r') as f:
       try:
-        latest_revision_id = int(f.read())
+        return int(f.read())
       except ValueError:
-        latest_revision_id = 0
+        return 0
   else:
     return 0
 
