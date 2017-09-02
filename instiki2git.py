@@ -52,17 +52,17 @@ def load_new_revisions(db_config, web_id, latest_revision_id=0):
     db_conn.close()
   return revisions
 
-def commit_revisions_to_repo(repo, revisions):
+def commit_revisions_to_repo(repo, revisions, latest_revision_file):
   """
   Commits a set of revisions to the given git repository.
 
   Inputs:
     * repo (dulwich.repo.Repo): the git repository
     * revisions ([dict]): the revisions, as a list of dictionaries
-  Output:
-    * latest_revision_id (str): the latest revision id that was committed
+    * latest_revision_file (file): the file where latest_revision_id is stored
+  Output: none
   """
-  latest_revision_id = None
+
   for rev in revisions:
     with open("%s/%s" % (repo.path, rev["page_id"]), "wb") as f:
       f.write(bytes(rev["content"], "utf8"))
@@ -76,15 +76,18 @@ IP address: %s""" % (rev["id"], rev["revised_at"], rev["name"], rev["author"],
     commit_author = "%s <>" % rev["author"]
     
     repo.do_commit(bytes(commit_msg, "utf8"), bytes(commit_author, "utf8"))
-    latest_revision_id = rev["id"]
-  return latest_revision_id
+    latest_revision_file.write(str(rev["id"]))
 
 def load_and_commit_new_revisions(repo_path, db_config, web_id,
-  latest_revision_id=0):
-  repo = load_repo(repo_path)
+  latest_revision_file):
+  try:
+    latest_revision_id = int(latest_revision_file.read())
+  except ValueError:
+    latest_revision_id = 0
   revs = load_new_revisions(db_config, web_id, latest_revision_id)
-  latest_revision_id = commit_revisions_to_repo(repo, revs)
-  return latest_revision_id
+
+  repo = load_repo(repo_path)
+  commit_revisions_to_repo(repo, revs, latest_revision_file)
 
 @click.command()
 @click.option("--config-file",
@@ -107,16 +110,9 @@ def cli(config_file, latest_revision_file):
   web_id = config_parser.get("web", "id")
   if os.path.exists(latest_revision_file):
     with click.open_file(latest_revision_file, "rw") as f:
-      try:
-        latest_revision_id = int(f.read())
-      except ValueError:
-        latest_revision_id = 0
-      latest_revision_id = load_and_commit_new_revisions(repo_path, db_config,
-        web_id, latest_revision_id)
-      f.write(str(latest_revision_id))
+      load_and_commit_new_revisions(repo_path, db_config, web_id, f)
   else:
-    latest_revision_id = 0
-    latest_revision_id = load_and_commit_new_revisions(repo_path, db_config,
-        web_id, latest_revision_id)
     with click.open_file(latest_revision_file, "w+") as f:
-      f.write(str(latest_revision_id))
+      f.write("0")
+      load_and_commit_new_revisions(repo_path, db_config,
+        web_id, f)
