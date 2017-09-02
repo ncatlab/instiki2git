@@ -62,6 +62,9 @@ def commit_revisions_to_repo(repo, revisions, latest_revision_file):
     * latest_revision_file (file): the file where latest_revision_id is stored
   Output: none
   """
+  for rev in revisions:
+    with open("%s/%s" % (repo.path, rev["page_id"]), "wb") as f:
+      f.write(rev["content"].encode("utf8"))
     repo.stage(["%d" % rev["page_id"]])
     commit_msg = """Revision ID: %s
 Revision date: %s
