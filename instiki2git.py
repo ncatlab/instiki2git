@@ -62,11 +62,7 @@ def commit_revisions_to_repo(repo, revisions, latest_revision_file):
     * latest_revision_file (file): the file where latest_revision_id is stored
   Output: none
   """
-
-  for rev in revisions:
-    with open("%s/%s" % (repo.path, rev["page_id"]), "wb") as f:
-      f.write(rev["content"].encode("utf8"))
-    repo.stage(["%d".encode("utf8")])
+    repo.stage(["%d" % rev["page_id"]])
     commit_msg = """Revision ID: %s
 Revision date: %s
 Page name: %s
@@ -76,14 +72,22 @@ IP address: %s""" % (rev["id"], rev["revised_at"], rev["name"], rev["author"],
     commit_author = "%s <>" % rev["author"]
     
     repo.do_commit(commit_msg.encode("utf8"), commit_author.encode("utf8"))
-    latest_revision_file.write(str(rev["id"]))
+    with click.open_file(latest_revision_file, 'w') as f_:
+      f_.write(str(rev["id"]))
+
+def read_latest_revision_id(latest_revision_file):
+  if os.path.exists(latest_revision_file):
+    with open(latest_revision_file, 'r') as f:
+      try:
+        latest_revision_id = int(f.read())
+      except ValueError:
+        latest_revision_id = 0
+  else:
+    return 0
 
 def load_and_commit_new_revisions(repo_path, db_config, web_id,
   latest_revision_file):
-  try:
-    latest_revision_id = int(latest_revision_file.read())
-  except ValueError:
-    latest_revision_id = 0
+  latest_revision_id = read_latest_revision_id(latest_revision_file)
   revs = load_new_revisions(db_config, web_id, latest_revision_id)
 
   repo = load_repo(repo_path)
@@ -108,9 +112,5 @@ def cli(config_file, latest_revision_file):
     "password": config_parser.get("database", "password"),
     "charset": config_parser.get("database", "charset")}
   web_id = config_parser.get("web", "id")
-  if os.path.exists(latest_revision_file):
-    with click.open_file(latest_revision_file, "r+") as f:
-      load_and_commit_new_revisions(repo_path, db_config, web_id, f)
-  else:
-    with click.open_file(latest_revision_file, "w+") as f:
-      load_and_commit_new_revisions(repo_path, db_config, web_id, f)
+  load_and_commit_new_revisions(repo_path, db_config, web_id,
+    latest_revision_file)
