@@ -108,11 +108,8 @@ def cli(config_file, latest_revision_file):
     "password": config_parser.get("database", "password"),
     "charset": config_parser.get("database", "charset")}
   web_id = config_parser.get("web", "id")
-  if os.path.exists(latest_revision_file):
-    with click.open_file(latest_revision_file, "rw") as f:
-      load_and_commit_new_revisions(repo_path, db_config, web_id, f)
-  else:
+  if not os.path.exists(latest_revision_file):
     with click.open_file(latest_revision_file, "w+") as f:
       f.write("0")
-      load_and_commit_new_revisions(repo_path, db_config,
-        web_id, f)
+  with click.open_file(latest_revision_file, "rw") as f:
+    load_and_commit_new_revisions(repo_path, db_config, web_id, f)
