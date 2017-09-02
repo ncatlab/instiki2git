@@ -65,8 +65,8 @@ def commit_revisions_to_repo(repo, revisions, latest_revision_file):
 
   for rev in revisions:
     with open("%s/%s" % (repo.path, rev["page_id"]), "wb") as f:
-      f.write(bytes(rev["content"], "utf8"))
-    repo.stage([bytes("%d" % rev["page_id"], "utf8")])
+      f.write(rev["content"].encode("utf8"))
+    repo.stage(["%d".encode("utf8")])
     commit_msg = """Revision ID: %s
 Revision date: %s
 Page name: %s
@@ -75,7 +75,7 @@ IP address: %s""" % (rev["id"], rev["revised_at"], rev["name"], rev["author"],
       rev["ip"])
     commit_author = "%s <>" % rev["author"]
     
-    repo.do_commit(bytes(commit_msg, "utf8"), bytes(commit_author, "utf8"))
+    repo.do_commit(commit_msg.encode("utf8"), commit_author.encode("utf8"))
     latest_revision_file.write(str(rev["id"]))
 
 def load_and_commit_new_revisions(repo_path, db_config, web_id,
