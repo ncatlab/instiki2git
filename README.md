@@ -34,3 +34,7 @@ Run the following:
 
 Optionally you can specify the `--config-file` (`~/.instiki2git` by default) or
 `--latest-revision-file` (`/tmp/instiki2git` by default) parameters.
+
+## Acknowledgment
+
+This script was coded jointly with [@sajeel](https://sajeelk.github.io/).
