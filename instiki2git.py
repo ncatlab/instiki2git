@@ -39,7 +39,8 @@ def load_new_revisions(db_config, web_id, latest_revision_id=0):
                             password=db_config["password"],
                             db=db_config["db"],
                             charset=db_config["charset"],
-                            cursorclass=pymysql.cursors.DictCursor)
+                            cursorclass=pymysql.cursors.DictCursor,
+                            use_unicode=True)
   try:
     with db_conn.cursor() as cursor:
       query = ("SELECT r.id,r.page_id,r.author,r.ip,r.revised_at,r.content,p.name"
