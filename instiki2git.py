@@ -75,7 +75,7 @@ def commit_revisions_to_repo(repo, revisions, latest_revision_file):
       f.write(rev["content"].encode("utf8"))
     repo.stage(["pages/%d.md" % rev["page_id"]])
     with open("%s/pages/%s.meta" % (repo.path, rev["page_id"]), "w") as f:
-      f.write("Name: %s\n" % rev["name"])
+      f.write("Name: %s\n" % rev["name"].encode("utf8"))
     repo.stage([
       "pages/%d.md" % rev["page_id"],
       "pages/%d.meta" % rev["page_id"]])
