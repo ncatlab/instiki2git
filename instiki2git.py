@@ -27,6 +27,13 @@ def load_repo(repo_path):
       repo = git_repo(repo_path)
     else:
       raise e
+  try:
+    os.mkdir(os.path.join(repo_path, "pages"))
+  except OSError as e:
+    if e.errno == errno.EEXIST:
+      pass
+    else:
+      raise e
   return repo
 
 def load_new_revisions(db_config, web_id, latest_revision_id=0):
