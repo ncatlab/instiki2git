@@ -64,10 +64,10 @@ def commit_revisions_to_repo(repo, revisions, latest_revision_file):
   Output: none
   """
   for rev in revisions:
-    with open("%s/pages/%s.md" % (repo.path, rev["page_id"]), "wb") as f:
+    with open("%s/pages/%s.md" % (repo.path, rev["page_id"]), "w") as f:
       f.write(rev["content"].encode("utf8"))
     repo.stage(["pages/%d.md" % rev["page_id"]])
-    with open("%s/pages/%s.meta" % (repo.path, rev["page_id"]), "wb") as f:
+    with open("%s/pages/%s.meta" % (repo.path, rev["page_id"]), "w") as f:
       f.write("Name: %s\n" % rev["name"])
     repo.stage([
       "pages/%d.md" % rev["page_id"],
