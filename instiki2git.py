@@ -101,6 +101,21 @@ def load_and_commit_new_revisions(repo_path, db_config, web_id,
   repo = load_repo(repo_path)
   commit_revisions_to_repo(repo, revs, latest_revision_file)
 
+def read_config(config_file):
+  config_parser = ConfigParser.RawConfigParser()
+  config_parser.read(config_file)
+  repo_path = config_parser.get("repository", "path")
+  db_config = {"host": config_parser.get("database", "host"),
+    "db": config_parser.get("database", "db"),
+    "user": config_parser.get("database", "user"),
+    "password": config_parser.get("database", "password"),
+    "charset": config_parser.get("database", "charset")}
+  web_id = config_parser.get("web", "id")
+  return {
+    "repo_path": repo_path,
+    "db_config": db_config,
+    "web_id": web_id}
+
 @click.command()
 @click.option("--config-file",
   type=click.Path(exists=True),
@@ -111,14 +126,9 @@ def load_and_commit_new_revisions(repo_path, db_config, web_id,
   default="/tmp/instiki2git",
   help="Path to a file containing the ID of the last committed revision.")
 def cli(config_file, latest_revision_file):
-  config_parser = ConfigParser.RawConfigParser()
-  config_parser.read(config_file)
-  repo_path = config_parser.get("repository", "path")
-  db_config = {"host": config_parser.get("database", "host"),
-    "db": config_parser.get("database", "db"),
-    "user": config_parser.get("database", "user"),
-    "password": config_parser.get("database", "password"),
-    "charset": config_parser.get("database", "charset")}
-  web_id = config_parser.get("web", "id")
+  config = read_config(config_file)
+  repo_path = config["repo_path"]
+  db_config = config["db_config"]
+  web_id = config["web_id"]
   load_and_commit_new_revisions(repo_path, db_config, web_id,
     latest_revision_file)
