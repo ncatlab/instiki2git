@@ -1,8 +1,10 @@
 import os,errno
+import time, datetime
 import ConfigParser
 import pymysql.cursors
 from dulwich.repo import Repo as git_repo
 import click
+import requests
 
 def load_repo(repo_path):
   """
@@ -101,28 +103,77 @@ def read_latest_revision_id(latest_revision_file):
   else:
     return 0
 
-def load_and_commit_new_revisions(repo_path, db_config, web_id,
-  latest_revision_file):
+def load_and_commit_new_revisions(repo_path, db_config, web_id, \
+                                  latest_revision_file):
   latest_revision_id = read_latest_revision_id(latest_revision_file)
   revs = load_new_revisions(db_config, web_id, latest_revision_id)
-
   repo = load_repo(repo_path)
   commit_revisions_to_repo(repo, revs, latest_revision_file)
+
+# begin html repository functions
+
+def read_latest_download_file(latest_download_file):
+  if os.path.exists(latest_download_file):
+    with open(latest_download_file, 'r') as f:
+      try:
+        return datetime.datetime.fromtimestamp(int(f.read()))
+      except ValueError:
+        return 0
+  else:
+    return 0
+
+def write_latest_download_file(latest_download_file):
+  with open(latest_download_file, 'w') as f:
+    f.write("%d" % time.time())
+
+def download_html_page(page_id, html_repo_path, web_http_url):
+  r = requests.get("%s/show_by_id/%s" % (web_http_url, page_id))
+  page_path = os.path.join(html_repo_path, "pages", "%s.html" % page_id)
+  with open(page_path, "wb") as f:
+    f.write(r.content)
+
+def html_repo_populate(repo_path, html_repo_path, web_http_url,
+  latest_download_file):
+  """
+  This is meant to be used in case the usual repository is already set up, and
+  but the html repository is not.  It will download the latest html version of
+  each page and save them all to the html repository as one commit.  It will
+  ignore pages that already have html versions downloaded.
+  """
+  html_repo = load_repo(html_repo_path)
+  write_latest_download_file(latest_download_file)
+  pages_list = map(lambda f: f[:-3],
+                   filter(lambda f: (f.endswith(".md") and
+                            not os.path.isfile(
+                              os.path.join(html_repo_path, "pages",
+                                           "%s.html" % f[:-3]))),
+                          os.listdir(os.path.join(repo_path, "pages"))))
+  for p in pages_list:
+    download_html_page(p, html_repo_path, web_http_url)
+  html_repo.stage(map(lambda p: "pages/%d.html" % p, pages_list))
+  html_repo.do_commit("Added current html versions.",
+    "nLab admin <nlab@ncatlab.org")
+
+# end html repository functions
 
 def read_config(config_file):
   config_parser = ConfigParser.RawConfigParser()
   config_parser.read(config_file)
   repo_path = config_parser.get("repository", "path")
+  html_repo_path = config_parser.get("html_repository", "path")
   db_config = {"host": config_parser.get("database", "host"),
     "db": config_parser.get("database", "db"),
     "user": config_parser.get("database", "user"),
     "password": config_parser.get("database", "password"),
     "charset": config_parser.get("database", "charset")}
   web_id = config_parser.get("web", "id")
+  web_http_url = config_parser.get("web", "http_url")
   return {
     "repo_path": repo_path,
+    "html_repo_path": html_repo_path,
     "db_config": db_config,
-    "web_id": web_id}
+    "web_id": web_id,
+    "web_http_url": web_http_url}
 
 @click.command()
 @click.option("--config-file",
@@ -135,8 +186,27 @@ def read_config(config_file):
   help="Path to a file containing the ID of the last committed revision.")
 def cli(config_file, latest_revision_file):
   config = read_config(config_file)
-  repo_path = config["repo_path"]
+  repo_path = os.path.abspath(config["repo_path"])
   db_config = config["db_config"]
   web_id = config["web_id"]
   load_and_commit_new_revisions(repo_path, db_config, web_id,
     latest_revision_file)
+
+@click.command()
+@click.option("--config-file",
+  type=click.Path(exists=True),
+  default=os.path.expanduser("~/.instiki2git"),
+  help="Path to configuration file.")
+@click.option("--latest-download-file",
+  type=click.Path(),
+  default="/tmp/instiki2git-html",
+  help="Path to a file containing the time of the last html download.")
+def cli_html(config_file, latest_download_file):
+  config = read_config(config_file)
+  repo_path = os.path.abspath(config["repo_path"])
+  html_repo_path = os.path.abspath(config["html_repo_path"])
+  web_http_url = config["web_http_url"]
+  if web_http_url.endswith("/"):
+    web_http_url = web_http_url[:-1]
+  html_repo_first_run(repo_path, html_repo_path, web_http_url,
+    latest_download_file)
