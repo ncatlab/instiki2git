@@ -208,5 +208,5 @@ def cli_html(config_file, latest_download_file):
   web_http_url = config["web_http_url"]
   if web_http_url.endswith("/"):
     web_http_url = web_http_url[:-1]
-  html_repo_first_run(repo_path, html_repo_path, web_http_url,
+  html_repo_populate(repo_path, html_repo_path, web_http_url,
     latest_download_file)
