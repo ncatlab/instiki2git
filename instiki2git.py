@@ -191,6 +191,8 @@ def html_repo_update(html_repo_path, db_config, web_id, web_http_url,
   write_latest_download_file(latest_download_file)
   revs = load_new_revisions_by_time(db_config, web_id, latest_download_time)
   pages_list = {r["page_id"] for r in revs}
+  print "Pages list:"
+  print pages_list
   html_repo = load_repo(html_repo_path)
   download_and_stage_html_pages(pages_list, html_repo, html_repo_path,
     web_http_url)
@@ -261,5 +263,5 @@ def cli_html(config_file, latest_download_file, populate):
     html_repo_populate(repo_path, html_repo_path, web_http_url,
       latest_download_file)
   else:
-html_repo_update(html_repo_path, db_config, web_id, web_http_url,
-  latest_download_file)
+    html_repo_update(html_repo_path, db_config, web_id, web_http_url,
+      latest_download_file)
