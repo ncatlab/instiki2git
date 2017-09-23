@@ -152,7 +152,7 @@ def html_repo_populate(repo_path, html_repo_path, web_http_url,
     download_html_page(p, html_repo_path, web_http_url)
   html_repo.stage(map(lambda p: "pages/%d.html" % p, pages_list))
   html_repo.do_commit("Added current html versions.",
-    "nLab admin <nlab@ncatlab.org")
+    "instiki2git <>")
 
 # end html repository functions
 
