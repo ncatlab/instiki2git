@@ -38,11 +38,7 @@ def load_repo(repo_path):
       raise e
   return repo
 
-def load_new_revisions(db_config, web_id, latest_revision_id=0):
-  """
-  Load all revisions, using the given database configuration to connect.  If a
-  `latest_revision_id` is provided, only loads revisions committed after that.
-  """
+def get_db_conn(db_config):
   db_conn = pymysql.connect(host=db_config["host"],
                             user=db_config["user"],
                             password=db_config["password"],
@@ -50,12 +46,42 @@ def load_new_revisions(db_config, web_id, latest_revision_id=0):
                             charset=db_config["charset"],
                             cursorclass=pymysql.cursors.DictCursor,
                             use_unicode=True)
+  return db_conn
+
+def load_new_revisions(db_config, web_id, latest_revision_id=0):
+  """
+  Load all revisions, using the given database configuration to connect.  If a
+  `latest_revision_id` is provided, only loads revisions committed after that.
+  """
+  db_conn = get_db_conn(db_config)
   try:
     with db_conn.cursor() as cursor:
       query = ("SELECT r.id,r.page_id,r.author,r.ip,r.revised_at,r.content,p.name"
         " FROM revisions r INNER JOIN pages p ON (r.page_id=p.id)"
         " WHERE r.web_id=%s AND r.id>%s"
         " ORDER BY r.id") % (web_id, latest_revision_id)
+      cursor.execute(query)
+      revisions = cursor.fetchall()
+  finally:
+    db_conn.close()
+  return revisions
+
+def load_new_revisions_by_time(db_config, web_id, latest_revision_time=None):
+  """
+  Load all revisions, using the given database configuration to connect.  If a
+  `latest_revision_time` is provided, only loads revisions committed after that.
+  """
+  db_conn = get_db_conn(db_config)
+  try:
+    with db_conn.cursor() as cursor:
+      date_selector = ""
+      if latest_revision_time:
+        time = latest_revision_time.strftime('%Y-%m-%d %H:%M:%S')
+        date_selector = " AND r.updated_at >= '%s'" % time
+      query = ("SELECT r.id,r.page_id,r.author,r.ip,r.revised_at,r.content,p.name"
+        " FROM revisions r INNER JOIN pages p ON (r.page_id=p.id)"
+        " WHERE r.web_id=%s%s"
+        " ORDER BY r.id") % (web_id, date_selector)
       cursor.execute(query)
       revisions = cursor.fetchall()
   finally:
@@ -132,6 +158,12 @@ def download_html_page(page_id, html_repo_path, web_http_url):
   with open(page_path, "wb") as f:
     f.write(r.content)
 
+def download_and_stage_html_pages(pages_list, html_repo, html_repo_path,
+  web_http_url):
+  for p in pages_list:
+    download_html_page(p, html_repo_path, web_http_url)
+  html_repo.stage(map(lambda p: "pages/%d.html" % p, pages_list))
+
 def html_repo_populate(repo_path, html_repo_path, web_http_url,
   latest_download_file):
   """
@@ -140,7 +172,6 @@ def html_repo_populate(repo_path, html_repo_path, web_http_url,
   each page and save them all to the html repository as one commit.  It will
   ignore pages that already have html versions downloaded.
   """
-  html_repo = load_repo(html_repo_path)
   write_latest_download_file(latest_download_file)
   pages_list = map(lambda f: f[:-3],
                    filter(lambda f: (f.endswith(".md") and
@@ -148,10 +179,22 @@ def html_repo_populate(repo_path, html_repo_path, web_http_url,
                               os.path.join(html_repo_path, "pages",
                                            "%s.html" % f[:-3]))),
                           os.listdir(os.path.join(repo_path, "pages"))))
-  for p in pages_list:
-    download_html_page(p, html_repo_path, web_http_url)
-  html_repo.stage(map(lambda p: "pages/%d.html" % p, pages_list))
+  html_repo = load_repo(html_repo_path)
+  download_and_stage_html_pages(pages_list, html_repo, html_repo_path,
+    web_http_url)
   html_repo.do_commit("Added current html versions.",
+    "instiki2git <>")
+
+def html_repo_update(html_repo_path, db_config, web_id, web_http_url,
+  latest_download_file):
+  latest_download_time = read_latest_download_file(latest_download_file)
+  write_latest_download_file(latest_download_file)
+  revs = load_new_revisions_by_time(db_config, web_id, latest_download_time)
+  pages_list = {r["page_id"] for r in revs}
+  html_repo = load_repo(html_repo_path)
+  download_and_stage_html_pages(pages_list, html_repo, html_repo_path,
+    web_http_url)
+  html_repo.do_commit("Updated %d pages." % len(pages_list),
     "instiki2git <>")
 
 # end html repository functions
@@ -201,12 +244,22 @@ def cli(config_file, latest_revision_file):
   type=click.Path(),
   default="/tmp/instiki2git-html",
   help="Path to a file containing the time of the last html download.")
-def cli_html(config_file, latest_download_file):
+@click.option("--populate",
+  is_flag=True,
+  default=False,
+  help="Run in populate mode")
+def cli_html(config_file, latest_download_file, populate):
   config = read_config(config_file)
   repo_path = os.path.abspath(config["repo_path"])
   html_repo_path = os.path.abspath(config["html_repo_path"])
+  db_config = config["db_config"]
+  web_id = config["web_id"]
   web_http_url = config["web_http_url"]
   if web_http_url.endswith("/"):
     web_http_url = web_http_url[:-1]
-  html_repo_populate(repo_path, html_repo_path, web_http_url,
-    latest_download_file)
+  if populate:
+    html_repo_populate(repo_path, html_repo_path, web_http_url,
+      latest_download_file)
+  else:
+html_repo_update(html_repo_path, db_config, web_id, web_http_url,
+  latest_download_file)
