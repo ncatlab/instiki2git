@@ -191,11 +191,12 @@ def html_repo_update(html_repo_path, db_config, web_id, web_http_url,
   write_latest_download_file(latest_download_file)
   revs = load_new_revisions_by_time(db_config, web_id, latest_download_time)
   pages_list = {r["page_id"] for r in revs}
-  html_repo = load_repo(html_repo_path)
-  download_and_stage_html_pages(pages_list, html_repo, html_repo_path,
-    web_http_url)
-  html_repo.do_commit("Updated %d pages." % len(pages_list),
-    "instiki2git <>")
+  if pages_list:
+    html_repo = load_repo(html_repo_path)
+    download_and_stage_html_pages(pages_list, html_repo, html_repo_path,
+      web_http_url)
+    html_repo.do_commit("Updated %d pages." % len(pages_list),
+      "instiki2git <>")
 
 # end html repository functions
 
