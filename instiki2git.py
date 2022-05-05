@@ -5,6 +5,7 @@ import pymysql.cursors
 from dulwich.repo import Repo as git_repo
 import click
 import requests
+import re
 
 def load_repo(repo_path):
   """
@@ -113,7 +114,10 @@ Page name: %s
 Author: %s
 IP address: %s""" % (rev["id"], rev["revised_at"], rev["name"], rev["author"],
       rev["ip"])
-    commit_author = "%s <>" % rev["author"]
+
+    # non-alphanumeric characters can cause git errors
+    # so we remove them with this regexp I found on stackoverflow
+    commit_author = "%s <>" % re.sub(r'[^\w]', ' ', rev["author"])
     
     repo.do_commit(commit_msg.encode("utf8"), commit_author.encode("utf8"))
     with click.open_file(latest_revision_file, 'w') as f_:
