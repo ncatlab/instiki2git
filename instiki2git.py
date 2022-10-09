@@ -67,6 +67,27 @@ def load_new_revisions(db_config, web_id, latest_revision_id=0):
     db_conn.close()
   return revisions
 
+def load_new_revisions_before(db_config, web_id, revision_id, before):
+  """
+  Load all revisions newer than the given `revision_id`,
+  that where 'updated_at' a time before `before`.
+  """
+  db_conn = get_db_conn(db_config)
+  try:
+    with db_conn.cursor() as cursor:
+      time = before.strftime('%Y-%m-%d %H:%M:%S')
+      date_selector = " AND r.updated_at < '%s'" % time
+      query = ("SELECT r.id,r.page_id,r.author,r.ip,r.revised_at,r.content,p.name"
+        " FROM revisions r INNER JOIN pages p ON (r.page_id=p.id)"
+        " WHERE r.web_id=%s%s"
+        " AND r.id>%s"
+        " ORDER BY r.id") % (web_id, date_selector, revision_id)
+      cursor.execute(query)
+      revisions = cursor.fetchall()
+  finally:
+    db_conn.close()
+  return revisions
+
 def load_new_revisions_by_time(db_config, web_id, latest_revision_time=None):
   """
   Load all revisions, using the given database configuration to connect.  If a
