@@ -1,6 +1,6 @@
 import os,errno
 import time, datetime
-import ConfigParser
+import configparser
 import pymysql.cursors
 from dulwich.repo import Repo as git_repo
 import click
@@ -205,7 +205,7 @@ def html_repo_update(html_repo_path, db_config, web_id, web_http_url,
 # end html repository functions
 
 def read_config(config_file):
-  config_parser = ConfigParser.RawConfigParser()
+  config_parser = configparser.RawConfigParser()
   config_parser.read(config_file)
   repo_path = config_parser.get("repository", "path")
   html_repo_path = config_parser.get("html_repository", "path")

@@ -9,7 +9,7 @@ setup(name="instiki2git",
   license="MIT",
   include_package_data=True,
   py_modules=["instiki2git"],
-  install_requires=["PyMySQL", "dulwich", "click", "requests"],
+  install_requires=["PyMySQL", "dulwich", "click", "requests", "configparser"],
   entry_points="""
     [console_scripts]
     instiki2git=instiki2git:cli
