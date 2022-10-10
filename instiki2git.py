@@ -3,6 +3,7 @@ import time, datetime
 import configparser
 import pymysql.cursors
 from dulwich.repo import Repo as git_repo
+from dulwich.porcelain import push as git_push
 import click
 import requests
 import re
@@ -160,6 +161,7 @@ def load_and_commit_new_revisions(repo_path, db_config, web_id, \
   revs = load_new_revisions(db_config, web_id, latest_revision_id)
   repo = load_repo(repo_path)
   commit_revisions_to_repo(repo, revs, latest_revision_file)
+  git_push(repo=repo)
 
 # begin html repository functions
 
