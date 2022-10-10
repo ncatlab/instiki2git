@@ -123,10 +123,10 @@ def commit_revisions_to_repo(repo, revisions, latest_revision_file):
   """
   for rev in revisions:
     with open("%s/pages/%s.md" % (repo.path, rev["page_id"]), "w") as f:
-      f.write(rev["content"].encode("utf8"))
+      f.write(rev["content"])
     repo.stage(["pages/%d.md" % rev["page_id"]])
     with open("%s/pages/%s.meta" % (repo.path, rev["page_id"]), "w") as f:
-      f.write("Name: %s\n" % rev["name"].encode("utf8"))
+      f.write("Name: %s\n" % rev["name"])
     repo.stage([
       "pages/%d.md" % rev["page_id"],
       "pages/%d.meta" % rev["page_id"]])
@@ -139,9 +139,15 @@ IP address: %s""" % (rev["id"], rev["revised_at"], rev["name"], rev["author"],
 
     # non-alphanumeric characters can cause git errors
     # so we remove them with this regexp I found on stackoverflow
+    # Also: dulwich and github insist on an email address,
+    #       we add an empty one with '<>'
     commit_author = "%s <>" % re.sub(r'[^\w]', ' ', rev["author"])
+
+    repo.do_commit(
+      message=commit_msg.encode("utf8"),
+      committer=b"instiki2git script <>",  # without this, a committer is generated
+      author=commit_author.encode("utf8"))
     
-    repo.do_commit(commit_msg.encode("utf8"), commit_author.encode("utf8"))
     with click.open_file(latest_revision_file, 'w') as f_:
       f_.write(str(rev["id"]))
 
