@@ -164,7 +164,8 @@ def read_latest_revision_id(latest_revision_file):
 def load_and_commit_new_revisions(repo_path, db_config, web_id, \
                                   latest_revision_file):
   latest_revision_id = read_latest_revision_id(latest_revision_file)
-  revs = load_new_revisions(db_config, web_id, latest_revision_id)
+  twentyseven_hours_ago = datetime.datetime.now() - datetime.timedelta(hours=27)
+  revs = load_new_revisions_before(db_config, web_id, latest_revision_id, twentyseven_hours_ago)
   repo = load_repo(repo_path)
   commit_revisions_to_repo(repo, revs, latest_revision_file)
   git_push(repo=repo)
