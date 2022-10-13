@@ -111,7 +111,28 @@ def load_new_revisions_by_time(db_config, web_id, latest_revision_time=None):
     db_conn.close()
   return revisions
 
-def commit_revisions_to_repo(repo, revisions, latest_revision_file):
+def load_revisions_between(db_config, web_id, start_after, stop_at):
+  """
+  Load all revisions newer than the given time `start_after` and older than or 
+  equal to `stop_at`, using the given database configuration to connect. 
+  `start_after` and `stop_at` have to be in the format '%Y-%m-%d %H:%M:%S'.
+  """
+  db_conn = get_db_conn(db_config)
+  try:
+    with db_conn.cursor() as cursor:
+      query = ("SELECT r.id,r.page_id,r.author,r.ip,r.revised_at,r.content,p.name"
+        " FROM revisions r INNER JOIN pages p ON (r.page_id=p.id)"
+        " WHERE r.web_id=%s"
+        " AND r.updated_at>'%s'"
+        " AND r.updated_at<='%s'"
+        " ORDER BY r.id") % (web_id, start_after, stop_at)
+      cursor.execute(query)
+      revisions = cursor.fetchall()
+  finally:
+    db_conn.close()
+  return revisions
+
+def commit_revisions_to_repo(repo, revisions):
   """
   Commits a set of revisions to the given git repository.
 
