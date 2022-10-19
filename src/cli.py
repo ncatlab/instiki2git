@@ -8,6 +8,8 @@ import click
 import requests
 import re
 
+import percent_code
+
 def load_repo(repo_path):
   """
   Load git repository at the given path, initializing if necessary.
@@ -157,16 +159,17 @@ Author: %s
 IP address: %s""" % (rev["id"], rev["revised_at"], rev["name"], rev["author"],
       rev["ip"])
 
-    # non-alphanumeric characters can cause git errors
-    # so we remove them with this regexp I found on stackoverflow
-    # Also: dulwich and github insist on an email address,
-    #       we add an empty one with '<>'
-    commit_author = "%s <>" % re.sub(r'[^\w]', ' ', rev["author"])
+    # dulwich and github insist on an email address, we add an empty one.
+    def with_empty_email(xs):
+      return xs + b' <>'
 
     repo.do_commit(
-      message=commit_msg.encode("utf8"),
-      committer=b"instiki2git script <>",  # without this, a committer is generated
-      author=commit_author.encode("utf8"))
+      message = commit_msg.encode("utf8"),
+      committer = with_empty_email(b'instiki2git'),
+      author = with_empty_email(
+        percent_code.git_identity.encode(rev['author'].encode('utf8'))
+      ),
+    )
 
 def read_latest_revision_id(latest_revision_file):
   if os.path.exists(latest_revision_file):
