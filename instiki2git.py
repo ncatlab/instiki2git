@@ -1,8 +1,9 @@
 import os,errno
 import time, datetime
-import ConfigParser
+import configparser
 import pymysql.cursors
 from dulwich.repo import Repo as git_repo
+from dulwich.porcelain import push as git_push
 import click
 import requests
 import re
@@ -67,6 +68,27 @@ def load_new_revisions(db_config, web_id, latest_revision_id=0):
     db_conn.close()
   return revisions
 
+def load_new_revisions_before(db_config, web_id, revision_id, before):
+  """
+  Load all revisions newer than the given `revision_id`,
+  that where 'updated_at' a time before `before`.
+  """
+  db_conn = get_db_conn(db_config)
+  try:
+    with db_conn.cursor() as cursor:
+      time = before.strftime('%Y-%m-%d %H:%M:%S')
+      date_selector = " AND r.updated_at < '%s'" % time
+      query = ("SELECT r.id,r.page_id,r.author,r.ip,r.revised_at,r.content,p.name"
+        " FROM revisions r INNER JOIN pages p ON (r.page_id=p.id)"
+        " WHERE r.web_id=%s%s"
+        " AND r.id>%s"
+        " ORDER BY r.id") % (web_id, date_selector, revision_id)
+      cursor.execute(query)
+      revisions = cursor.fetchall()
+  finally:
+    db_conn.close()
+  return revisions
+
 def load_new_revisions_by_time(db_config, web_id, latest_revision_time=None):
   """
   Load all revisions, using the given database configuration to connect.  If a
@@ -89,22 +111,42 @@ def load_new_revisions_by_time(db_config, web_id, latest_revision_time=None):
     db_conn.close()
   return revisions
 
-def commit_revisions_to_repo(repo, revisions, latest_revision_file):
+def load_revisions_between(db_config, web_id, start_after, stop_at):
+  """
+  Load all revisions newer than the given time `start_after` and older than or
+  equal to `stop_at`, using the given database configuration to connect.
+  `start_after` and `stop_at` have to be in the format '%Y-%m-%d %H:%M:%S'.
+  """
+  db_conn = get_db_conn(db_config)
+  try:
+    with db_conn.cursor() as cursor:
+      query = ("SELECT r.id,r.page_id,r.author,r.ip,r.revised_at,r.content,p.name"
+        " FROM revisions r INNER JOIN pages p ON (r.page_id=p.id)"
+        " WHERE r.web_id=%s"
+        " AND r.updated_at>'%s'"
+        " AND r.updated_at<='%s'"
+        " ORDER BY r.id") % (web_id, start_after, stop_at)
+      cursor.execute(query)
+      revisions = cursor.fetchall()
+  finally:
+    db_conn.close()
+  return revisions
+
+def commit_revisions_to_repo(repo, revisions):
   """
   Commits a set of revisions to the given git repository.
 
   Inputs:
     * repo (dulwich.repo.Repo): the git repository
     * revisions ([dict]): the revisions, as a list of dictionaries
-    * latest_revision_file (file): the file where latest_revision_id is stored
   Output: none
   """
   for rev in revisions:
     with open("%s/pages/%s.md" % (repo.path, rev["page_id"]), "w") as f:
-      f.write(rev["content"].encode("utf8"))
+      f.write(rev["content"])
     repo.stage(["pages/%d.md" % rev["page_id"]])
     with open("%s/pages/%s.meta" % (repo.path, rev["page_id"]), "w") as f:
-      f.write("Name: %s\n" % rev["name"].encode("utf8"))
+      f.write("Name: %s\n" % rev["name"])
     repo.stage([
       "pages/%d.md" % rev["page_id"],
       "pages/%d.meta" % rev["page_id"]])
@@ -117,11 +159,14 @@ IP address: %s""" % (rev["id"], rev["revised_at"], rev["name"], rev["author"],
 
     # non-alphanumeric characters can cause git errors
     # so we remove them with this regexp I found on stackoverflow
+    # Also: dulwich and github insist on an email address,
+    #       we add an empty one with '<>'
     commit_author = "%s <>" % re.sub(r'[^\w]', ' ', rev["author"])
-    
-    repo.do_commit(commit_msg.encode("utf8"), commit_author.encode("utf8"))
-    with click.open_file(latest_revision_file, 'w') as f_:
-      f_.write(str(rev["id"]))
+
+    repo.do_commit(
+      message=commit_msg.encode("utf8"),
+      committer=b"instiki2git script <>",  # without this, a committer is generated
+      author=commit_author.encode("utf8"))
 
 def read_latest_revision_id(latest_revision_file):
   if os.path.exists(latest_revision_file):
@@ -133,12 +178,67 @@ def read_latest_revision_id(latest_revision_file):
   else:
     return 0
 
-def load_and_commit_new_revisions(repo_path, db_config, web_id, \
-                                  latest_revision_file):
+def read_latest_time(latest_time_file):
+  if os.path.exists(latest_time_file):
+    with open(latest_time_file, 'r') as f:
+      try:
+        file_content = f.read()
+        if file_content == "updating":
+          raise Exception("instikit2git didn't properly finish. \n" +
+                          "The latest-time-file %s still contains 'updating' instead of a time. \n"
+                          % (latest_time_file) +
+                          "You have to manually figure out what happened and fix it. ")
+        else:
+          return datetime.datetime.strptime(file_content, '%Y-%m-%d %H:%M:%S')
+      except ValueError:
+        raise Exception("Time of latest committed revision could not be read. \n" +
+                        "Format is '%Y-%m-%d %H:%M:%S'. \n" +
+                        "Trailing newline is not supported.")
+  else:
+    raise Exception("Given path '%s' of file with  time up until which everything is committed does not exist."
+                    % (latest_time_file))
+
+def write_updating(latest_time_file):
+  if os.path.exists(latest_time_file):
+    with open(latest_time_file, 'w') as f:
+      f.write("updating")
+  else:
+    raise Exception("Given path '%s' of file with time up until which everything is committed does not exist."
+                    % (latest_time_file))
+
+def write_time_to_file(formatted_time, latest_time_file):
+  """
+  Write the '%Y-%m-%d %H:%M:%S' formatted time `formatted_time` into the file `latest_time_file`.
+  """
+  if os.path.exists(latest_time_file):
+    with open(latest_time_file, 'w') as f:
+      f.write(formatted_time)
+  else:
+    raise Exception("Given path '%s' of file with time up until which everything is committed does not exist."
+                    % (latest_time_file))
+
+
+def load_and_commit_new_revisions(repo_path, db_config, web_id,
+                                  latest_revision_file,
+                                  latest_time_file):
   latest_revision_id = read_latest_revision_id(latest_revision_file)
-  revs = load_new_revisions(db_config, web_id, latest_revision_id)
+  latest_committed_time = read_latest_time(latest_time_file)
+  write_updating(latest_time_file)
+
+  # the following time should be at least one second behind 'now', to ensure that
+  # no updates written after the query in 'load_revisions_between' are missed.
+  twentyseven_hours_ago = datetime.datetime.now() - datetime.timedelta(hours=27)
+
+  formatted_end = twentyseven_hours_ago.strftime('%Y-%m-%d %H:%M:%S')
+  formatted_start = latest_committed_time.strftime('%Y-%m-%d %H:%M:%S')
+  revs = load_revisions_between(db_config, web_id,
+                                start_after=formatted_start,
+                                stop_at=formatted_end)
+
   repo = load_repo(repo_path)
-  commit_revisions_to_repo(repo, revs, latest_revision_file)
+  commit_revisions_to_repo(repo, revs)
+  git_push(repo=repo)
+  write_time_to_file(formatted_end, latest_time_file)
 
 # begin html repository functions
 
@@ -205,7 +305,7 @@ def html_repo_update(html_repo_path, db_config, web_id, web_http_url,
 # end html repository functions
 
 def read_config(config_file):
-  config_parser = ConfigParser.RawConfigParser()
+  config_parser = configparser.RawConfigParser()
   config_parser.read(config_file)
   repo_path = config_parser.get("repository", "path")
   html_repo_path = config_parser.get("html_repository", "path")
@@ -232,13 +332,17 @@ def read_config(config_file):
   type=click.Path(),
   default="/tmp/instiki2git",
   help="Path to a file containing the ID of the last committed revision.")
-def cli(config_file, latest_revision_file):
+@click.option("--latest-time-file",
+  type=click.Path(),
+  default="/tmp/instiki2git-time",
+  help="Path to a file containing the time of the last committed revision update.")
+def cli(config_file, latest_revision_file, latest_time_file):
   config = read_config(config_file)
   repo_path = os.path.abspath(config["repo_path"])
   db_config = config["db_config"]
   web_id = config["web_id"]
   load_and_commit_new_revisions(repo_path, db_config, web_id,
-    latest_revision_file)
+                                latest_revision_file, latest_time_file)
 
 @click.command()
 @click.option("--config-file",
