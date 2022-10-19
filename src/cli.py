@@ -144,42 +144,34 @@ def commit_message_encode(values: dict[str, str]):
     for (key, value) in values.items()
   )
 
-def commit_revisions_to_repo(repo, revisions):
-  """
-  Commits a set of revisions to the given git repository.
+def commit_revision_to_repo(repo: git_repo, rev: dict):
+  """Commit a revision to a git repository."""
+  with open("%s/pages/%s.md" % (repo.path, rev["page_id"]), "w") as f:
+    f.write(rev["content"])
+  repo.stage(["pages/%d.md" % rev["page_id"]])
+  with open("%s/pages/%s.meta" % (repo.path, rev["page_id"]), "w") as f:
+    f.write("Name: %s\n" % rev["name"])
+  repo.stage([
+    "pages/%d.md" % rev["page_id"],
+    "pages/%d.meta" % rev["page_id"]])
 
-  Inputs:
-    * repo (dulwich.repo.Repo): the git repository
-    * revisions ([dict]): the revisions, as a list of dictionaries
-  Output: none
-  """
-  for rev in revisions:
-    with open("%s/pages/%s.md" % (repo.path, rev["page_id"]), "w") as f:
-      f.write(rev["content"])
-    repo.stage(["pages/%d.md" % rev["page_id"]])
-    with open("%s/pages/%s.meta" % (repo.path, rev["page_id"]), "w") as f:
-      f.write("Name: %s\n" % rev["name"])
-    repo.stage([
-      "pages/%d.md" % rev["page_id"],
-      "pages/%d.meta" % rev["page_id"]])
+  # dulwich and github insist on an email address, we add an empty one.
+  def with_empty_email(xs):
+    return xs + b' <>'
 
-    # dulwich and github insist on an email address, we add an empty one.
-    def with_empty_email(xs):
-      return xs + b' <>'
-
-    repo.do_commit(
-      message = commit_message_encode({
-        'Revision ID': str(rev['id']),
-        'Revision date': str(rev['revised_at']),
-        'Page name': rev['name'],
-        'Author': rev['author'],
-        'IP address': rev['ip'],
-      }),
-      committer = with_empty_email(b'instiki2git'),
-      author = with_empty_email(
-        percent_code.git_identity.encode(rev['author'].encode('utf8'))
-      ),
-    )
+  repo.do_commit(
+    message = commit_message_encode({
+      'Revision ID': str(rev['id']),
+      'Revision date': str(rev['revised_at']),
+      'Page name': rev['name'],
+      'Author': rev['author'],
+      'IP address': rev['ip'],
+    }),
+    committer = with_empty_email(b'instiki2git'),
+    author = with_empty_email(
+      percent_code.git_identity.encode(rev['author'].encode('utf8'))
+    ),
+  )
 
 def read_latest_revision_id(latest_revision_file):
   if os.path.exists(latest_revision_file):
@@ -249,7 +241,8 @@ def load_and_commit_new_revisions(repo_path, db_config, web_id,
                                 stop_at=formatted_end)
 
   repo = load_repo(repo_path)
-  commit_revisions_to_repo(repo, revs)
+  for rev in revs:
+    commit_revision_to_repo(repo, rev)
   git_push(repo=repo)
   write_time_to_file(formatted_end, latest_time_file)
 
