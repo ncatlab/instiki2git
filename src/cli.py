@@ -11,30 +11,6 @@ from pathlib import Path
 
 from instiki2git.percent_code import PercentCode
 
-def load_repo(repo_path: Path):
-  """
-  Load git repository at the given path, initializing if necessary.
-
-  Inputs:
-    * repo_path (str): a path to the output repository
-  Output:
-    * repo (dulwich.repo.Repo): the git repository
-  """
-  repo_path.mkdir(exist_ok = True)
-  try:
-    repo = git_repo.init(repo_path)
-  except OSError as e:
-    if e.errno == errno.EEXIST:
-      repo = git_repo(repo_path)
-    else:
-      raise
-  try:
-    os.mkdir(os.path.join(repo_path, "pages"))
-  except OSError as e:
-    if not e.errno == errno.EEXIST:
-      raise
-  return repo
-
 def get_db_conn(db_config):
   db_conn = pymysql.connect(host=db_config["host"],
                             user=db_config["user"],
@@ -158,8 +134,11 @@ git_identity_code = PercentCode(reserved = map(ord, ['\0', '\n', '<', '>']))
 
 def commit_revision_to_repo(repo: git_repo, rev: dict):
   """Commit a revision to a git repository."""
+  dir_pages = Path(repo.path) / 'pages'
+  dir_pages.mkdir(exist_ok = True)
+
   def add_file(filename: str, content: bytes | str):
-    path = Path(repo.path) / 'pages' / filename
+    path = dir_pages / filename
     if isinstance(content, str):
       path.write_text(content, encoding = 'utf8')
     else:
@@ -241,7 +220,7 @@ def load_and_commit_new_revisions(repo_path, db_config, web_id,
                                 start_after=formatted_start,
                                 stop_at=formatted_end)
 
-  repo = load_repo(repo_path)
+  repo = git_repo(repo_path)
   for rev in revs:
     commit_revision_to_repo(repo, rev)
   git_push(repo=repo)
@@ -284,7 +263,7 @@ def html_repo_populate(repo_path, html_repo_path, web_http_url,
                               os.path.join(html_repo_path, "pages",
                                            "%s.html" % f[:-3]))),
                           os.listdir(os.path.join(repo_path, "pages"))))
-  html_repo = load_repo(html_repo_path)
+  html_repo = git_repo(html_repo_path)
   download_and_stage_html_pages(pages_list, html_repo, html_repo_path,
     web_http_url)
   html_repo.do_commit("Added current html versions.",
@@ -297,7 +276,7 @@ def html_repo_update(html_repo_path, db_config, web_id, web_http_url,
   revs = load_new_revisions_by_time(db_config, web_id, latest_download_time)
   pages_list = {r["page_id"] for r in revs}
   if pages_list:
-    html_repo = load_repo(html_repo_path)
+    html_repo = git_repo(html_repo_path)
     download_and_stage_html_pages(pages_list, html_repo, html_repo_path,
       web_http_url)
     html_repo.do_commit("Updated %d pages." % len(pages_list),
