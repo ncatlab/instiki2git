@@ -46,7 +46,7 @@ def get_db_conn(db_config):
                             password=db_config["password"],
                             db=db_config["db"],
                             charset=db_config["charset"],
-                            cursorclass=pymysql.cursors.DictCursor,
+                            cursorclass=pymysql.cursors.SSDictCursor,
                             use_unicode=True)
   return db_conn
 
