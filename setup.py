@@ -10,6 +10,7 @@ setup(name="instiki2git",
   include_package_data=True,
   py_modules=["instiki2git"],
   install_requires=["PyMySQL", "dulwich", "click", "requests", "configparser"],
+  python_requires="~=3.9",
   entry_points="""
     [console_scripts]
     instiki2git=instiki2git:cli
