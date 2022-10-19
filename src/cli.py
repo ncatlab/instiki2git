@@ -2,8 +2,8 @@ import os,errno
 import time, datetime
 import configparser
 import pymysql.cursors
-from dulwich.repo import Repo as git_repo
-from dulwich.porcelain import push as git_push
+import dulwich.repo
+import dulwich.porcelain
 import click
 import requests
 import re
@@ -132,7 +132,7 @@ def commit_message_decode(msg: bytes) -> dict[str, str]:
 # These are the reserved bytes in git commit authors and committers.
 git_identity_code = PercentCode(reserved = map(ord, ['\0', '\n', '<', '>']))
 
-def commit_revision_to_repo(repo: git_repo, rev: dict):
+def commit_revision_to_repo(repo: dulwich.repo.Repo, rev: dict):
   """Commit a revision to a git repository."""
   dir_pages = Path(repo.path) / 'pages'
   dir_pages.mkdir(exist_ok = True)
@@ -220,10 +220,10 @@ def load_and_commit_new_revisions(repo_path, db_config, web_id,
                                 start_after=formatted_start,
                                 stop_at=formatted_end)
 
-  repo = git_repo(repo_path)
+  repo = dulwich.repo.Repo(repo_path)
   for rev in revs:
     commit_revision_to_repo(repo, rev)
-  git_push(repo=repo)
+  dulwich.porcelain.push(repo = repo)
   write_time_to_file(formatted_end, latest_time_file)
 
 # begin html repository functions
@@ -263,7 +263,7 @@ def html_repo_populate(repo_path, html_repo_path, web_http_url,
                               os.path.join(html_repo_path, "pages",
                                            "%s.html" % f[:-3]))),
                           os.listdir(os.path.join(repo_path, "pages"))))
-  html_repo = git_repo(html_repo_path)
+  html_repo = dulwich.repo.Repo(html_repo_path)
   download_and_stage_html_pages(pages_list, html_repo, html_repo_path,
     web_http_url)
   html_repo.do_commit("Added current html versions.",
@@ -276,7 +276,7 @@ def html_repo_update(html_repo_path, db_config, web_id, web_http_url,
   revs = load_new_revisions_by_time(db_config, web_id, latest_download_time)
   pages_list = {r["page_id"] for r in revs}
   if pages_list:
-    html_repo = git_repo(html_repo_path)
+    html_repo = dulwich.repo.Repo(html_repo_path)
     download_and_stage_html_pages(pages_list, html_repo, html_repo_path,
       web_http_url)
     html_repo.do_commit("Updated %d pages." % len(pages_list),
