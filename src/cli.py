@@ -134,15 +134,25 @@ def load_revisions_between(db_config, web_id, start_after, stop_at):
     db_conn.close()
   return revisions
 
-def commit_message_encode(values: dict[str, str]):
-  """Encodes metadata in the commit message."""
-  def f(x):
-    return percent_code.commit_data.encode(x.encode('utf8'))
+
+def commit_message_encode(values: dict[str, str]) -> bytes:
+  """Encode metadata in the commit message."""
+  from percent_code import commit_data_key as k, commit_data_value as v
 
   return b''.join(
-    f(key) + b': ' + f(value) + b'\n'
+    k.encode(key.encode('utf8')) + b': ' + v.encode(value.encode('utf8')) + b'\n'
     for (key, value) in values.items()
   )
+
+def commit_message_decode(msg: bytes) -> dict[str, str]:
+  """Decode metadata in the commit message."""
+  from percent_code import commit_data_key as k, commit_data_value as v
+
+  def f(line):
+    (key, value) = line.split(b': ', 1)
+    return (k.decode(key).decode('utf8'), v.decode(value).decode('utf8'))
+
+  return dict(map(f, msg.splitlines()))
 
 def commit_revision_to_repo(repo: git_repo, rev: dict):
   """Commit a revision to a git repository."""
