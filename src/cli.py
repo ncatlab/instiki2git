@@ -7,10 +7,11 @@ from dulwich.porcelain import push as git_push
 import click
 import requests
 import re
+from pathlib import Path
 
 from instiki2git.percent_code import PercentCode
 
-def load_repo(repo_path):
+def load_repo(repo_path: Path):
   """
   Load git repository at the given path, initializing if necessary.
 
@@ -19,27 +20,19 @@ def load_repo(repo_path):
   Output:
     * repo (dulwich.repo.Repo): the git repository
   """
-  try:
-    os.mkdir(repo_path)
-  except OSError as e:
-    if e.errno == errno.EEXIST:
-      pass
-    else:
-      raise e
+  repo_path.mkdir(exist_ok = True)
   try:
     repo = git_repo.init(repo_path)
   except OSError as e:
     if e.errno == errno.EEXIST:
       repo = git_repo(repo_path)
     else:
-      raise e
+      raise
   try:
     os.mkdir(os.path.join(repo_path, "pages"))
   except OSError as e:
-    if e.errno == errno.EEXIST:
-      pass
-    else:
-      raise e
+    if not e.errno == errno.EEXIST:
+      raise
   return repo
 
 def get_db_conn(db_config):
@@ -165,14 +158,17 @@ git_identity_code = PercentCode(reserved = map(ord, ['\0', '\n', '<', '>']))
 
 def commit_revision_to_repo(repo: git_repo, rev: dict):
   """Commit a revision to a git repository."""
-  with open("%s/pages/%s.md" % (repo.path, rev["page_id"]), "w") as f:
-    f.write(rev["content"])
-  repo.stage(["pages/%d.md" % rev["page_id"]])
-  with open("%s/pages/%s.meta" % (repo.path, rev["page_id"]), "w") as f:
-    f.write("Name: %s\n" % rev["name"])
-  repo.stage([
-    "pages/%d.md" % rev["page_id"],
-    "pages/%d.meta" % rev["page_id"]])
+  def add_file(filename: str, content: bytes | str):
+    path = Path(repo.path) / 'pages' / filename
+    if isinstance(content, str):
+      path.write_text(content, encoding = 'utf8')
+    else:
+      path.write_bytes(content)
+    repo.stage(Path('pages') / filename)
+
+  page_id = rev['page_id']
+  add_file(f'{page_id}.md', rev['content'])
+  add_file(f'{page_id}.meta', commit_message_encode({'Name': rev['name']}))
 
   # dulwich and github insist on an email address, we add an empty one.
   def with_empty_email(xs):
@@ -193,53 +189,39 @@ def commit_revision_to_repo(repo: git_repo, rev: dict):
   )
 
 def read_latest_revision_id(latest_revision_file):
-  if os.path.exists(latest_revision_file):
-    with open(latest_revision_file, 'r') as f:
-      try:
-        return int(f.read())
-      except ValueError:
-        return 0
-  else:
+  try:
+    return int(latest_revision_file.read_text())
+  except FileNotFoundError:
     return 0
 
+def check_time_file(latest_time_file):
+  if not latest_time_file.exists():
+    raise Exception(f"Given path '{latest_time_file}' of file with time up until which everything is committed does not exist.")
+
 def read_latest_time(latest_time_file):
-  if os.path.exists(latest_time_file):
-    with open(latest_time_file, 'r') as f:
-      try:
-        file_content = f.read()
-        if file_content == "updating":
-          raise Exception("instikit2git didn't properly finish. \n" +
-                          "The latest-time-file %s still contains 'updating' instead of a time. \n"
-                          % (latest_time_file) +
-                          "You have to manually figure out what happened and fix it. ")
-        else:
-          return datetime.datetime.strptime(file_content, '%Y-%m-%d %H:%M:%S')
-      except ValueError:
-        raise Exception("Time of latest committed revision could not be read. \n" +
-                        "Format is '%Y-%m-%d %H:%M:%S'. \n" +
-                        "Trailing newline is not supported.")
-  else:
-    raise Exception("Given path '%s' of file with  time up until which everything is committed does not exist."
-                    % (latest_time_file))
+  check_time_file(latest_time_file)
+  file_content = latest_time_file.read_text()
+  if file_content == "updating":
+    raise Exception("instikit2git didn't properly finish.\n" +
+                    "The latest-time-file '{latest_time_file}' still contains 'updating' instead of a time. \n" +
+                    "You have to manually figure out what happened and fix it. ")
+  try:
+    return datetime.datetime.strptime(file_content, '%Y-%m-%d %H:%M:%S')
+  except ValueError:
+    raise Exception("Time of latest committed revision could not be read. \n" +
+                    "Format is '%Y-%m-%d %H:%M:%S'. \n" +
+                    "Trailing newline is not supported.")
 
 def write_updating(latest_time_file):
-  if os.path.exists(latest_time_file):
-    with open(latest_time_file, 'w') as f:
-      f.write("updating")
-  else:
-    raise Exception("Given path '%s' of file with time up until which everything is committed does not exist."
-                    % (latest_time_file))
+  check_time_file(latest_time_file)
+  latest_time_file.write_text('updating')
 
 def write_time_to_file(formatted_time, latest_time_file):
   """
   Write the '%Y-%m-%d %H:%M:%S' formatted time `formatted_time` into the file `latest_time_file`.
   """
-  if os.path.exists(latest_time_file):
-    with open(latest_time_file, 'w') as f:
-      f.write(formatted_time)
-  else:
-    raise Exception("Given path '%s' of file with time up until which everything is committed does not exist."
-                    % (latest_time_file))
+  check_time_file(latest_time_file)
+  latest_time_file.write_text(formatted_time)
 
 
 def load_and_commit_new_revisions(repo_path, db_config, web_id,
@@ -268,24 +250,18 @@ def load_and_commit_new_revisions(repo_path, db_config, web_id,
 # begin html repository functions
 
 def read_latest_download_file(latest_download_file):
-  if os.path.exists(latest_download_file):
-    with open(latest_download_file, 'r') as f:
-      try:
-        return datetime.datetime.fromtimestamp(int(f.read()))
-      except ValueError:
-        return 0
-  else:
+  try:
+    datetime.datetime.fromtimestamp(latest_download_file.read_text())
+  except FileNotFoundError:
     return 0
 
 def write_latest_download_file(latest_download_file):
-  with open(latest_download_file, 'w') as f:
-    f.write("%d" % time.time())
+  latest_download_file.write_text(str(time.time()))
 
 def download_html_page(page_id, html_repo_path, web_http_url):
   r = requests.get("%s/show_by_id/%s" % (web_http_url, page_id))
-  page_path = os.path.join(html_repo_path, "pages", "%s.html" % page_id)
-  with open(page_path, "wb") as f:
-    f.write(r.content)
+  page_path = html_repo_path / 'pages' / f'{page_id}.html'
+  page_path.write_bytes(r.content)
 
 def download_and_stage_html_pages(pages_list, html_repo, html_repo_path,
   web_http_url):
@@ -350,16 +326,16 @@ def read_config(config_file):
 
 @click.command()
 @click.option("--config-file",
-  type=click.Path(exists=True),
+  type=click.Path(exists = True, path_type = Path),
   default=os.path.expanduser("~/.instiki2git"),
   help="Path to configuration file.")
 @click.option("--latest-revision-file",
-  type=click.Path(),
-  default="/tmp/instiki2git",
+  type=click.Path(path_type = Path),
+  default=Path('/tmp/instiki2git'),
   help="Path to a file containing the ID of the last committed revision.")
 @click.option("--latest-time-file",
-  type=click.Path(),
-  default="/tmp/instiki2git-time",
+  type=click.Path(path_type = Path),
+  default=Path('/tmp/instiki2git-time'),
   help="Path to a file containing the time of the last committed revision update.")
 def cli(config_file, latest_revision_file, latest_time_file):
   config = read_config(config_file)
@@ -371,12 +347,12 @@ def cli(config_file, latest_revision_file, latest_time_file):
 
 @click.command()
 @click.option("--config-file",
-  type=click.Path(exists=True),
-  default=os.path.expanduser("~/.instiki2git"),
+  type=click.Path(exists = True, path_type = Path),
+  default=Path('~/.instiki2git').expanduser(),
   help="Path to configuration file.")
 @click.option("--latest-download-file",
-  type=click.Path(),
-  default="/tmp/instiki2git-html",
+  type=click.Path(path_type = Path),
+  default=Path('/tmp/instiki2git-html'),
   help="Path to a file containing the time of the last html download.")
 @click.option("--populate",
   is_flag=True,
