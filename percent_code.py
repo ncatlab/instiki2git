@@ -39,3 +39,6 @@ class PercentCode:
 
 # These are the reserved bytes in git commit authors and committers.
 git_identity = PercentCode(reserved = map(ord, ['\0', '\n', '<', '>']))
+
+# These are the reserved bytes in our commit metadata values.
+commit_data = PercentCode(reserved = map(ord, ['\0', '\n']))

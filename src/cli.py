@@ -134,6 +134,16 @@ def load_revisions_between(db_config, web_id, start_after, stop_at):
     db_conn.close()
   return revisions
 
+def commit_message_encode(values: dict[str, str]):
+  """Encodes metadata in the commit message."""
+  def f(x):
+    return percent_code.commit_data.encode(x.encode('utf8'))
+
+  return b''.join(
+    f(key) + b': ' + f(value) + b'\n'
+    for (key, value) in values.items()
+  )
+
 def commit_revisions_to_repo(repo, revisions):
   """
   Commits a set of revisions to the given git repository.
@@ -152,19 +162,19 @@ def commit_revisions_to_repo(repo, revisions):
     repo.stage([
       "pages/%d.md" % rev["page_id"],
       "pages/%d.meta" % rev["page_id"]])
-    commit_msg = """Revision ID: %s
-Revision date: %s
-Page name: %s
-Author: %s
-IP address: %s""" % (rev["id"], rev["revised_at"], rev["name"], rev["author"],
-      rev["ip"])
 
     # dulwich and github insist on an email address, we add an empty one.
     def with_empty_email(xs):
       return xs + b' <>'
 
     repo.do_commit(
-      message = commit_msg.encode("utf8"),
+      message = commit_message_encode({
+        'Revision ID': str(rev['id']),
+        'Revision date': str(rev['revised_at']),
+        'Page name': rev['name'],
+        'Author': rev['author'],
+        'IP address': rev['ip'],
+      }),
       committer = with_empty_email(b'instiki2git'),
       author = with_empty_email(
         percent_code.git_identity.encode(rev['author'].encode('utf8'))
