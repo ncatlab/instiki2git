@@ -1,5 +1,6 @@
 import os,errno
-import time, datetime
+import time
+import datetime
 import configparser
 import pymysql.cursors
 import dulwich.repo
@@ -153,10 +154,13 @@ def commit_revision_to_repo(repo: dulwich.repo.Repo, rev: dict):
   def with_empty_email(xs):
     return xs + b' <>'
 
+  # We assume datetime fields in the database use UTC.
+  revision_date = rev['revised_at'].replace(tzinfo = datetime.timezone.utc)
+
   repo.do_commit(
     message = commit_message_encode({
       'Revision ID': str(rev['id']),
-      'Revision date': str(rev['revised_at']),
+      'Revision date': str(revision_date),
       'Page name': rev['name'],
       'Author': rev['author'],
       'IP address': rev['ip'],
@@ -165,6 +169,8 @@ def commit_revision_to_repo(repo: dulwich.repo.Repo, rev: dict):
     author = with_empty_email(
       git_identity_code.encode(rev['author'].encode('utf8'))
     ),
+    author_timestamp = revision_date.timestamp(),
+    author_timezone = 0,
   )
 
 def read_latest_revision_id(latest_revision_file):
