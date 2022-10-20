@@ -123,7 +123,7 @@ def add_file(repo: dulwich.repo.Repo, path: Path, content: bytes | str) -> NoRet
 # These are the reserved bytes in git commit authors and committers.
 git_identity_code = PercentCode(reserved = map(ord, ['\0', '\n', '<', '>']))
 
-def commit_revision(repo: dulwich.repo.Repo, revision: dict):
+def commit_revision(repo: dulwich.repo.Repo, revision: dict, include_ip: bool):
   """Commit a revision to a git repository."""
   id = revision['id']
   logger.info(f'Committing revision {id}.')
@@ -139,12 +139,14 @@ def commit_revision(repo: dulwich.repo.Repo, revision: dict):
   # We assume datetime fields in the database use UTC.
   revision_date = revision['revised_at'].replace(tzinfo = timezone.utc)
 
+  def fields():
+    yield ('Revision ID', str(revision['id']))
+    yield ('Page name', revision['name'])
+    if include_ip:
+      yield ('IP address', revision['ip'])
+
   repo.do_commit(
-    message = commit_message_encode({
-      'Revision ID': str(revision['id']),
-      'Page name': revision['name'],
-      'IP address': revision['ip'],
-    }),
+    message = commit_message_encode(dict(fields())),
     committer = with_empty_email(b'instiki2git'),
     author = with_empty_email(
       git_identity_code.encode(revision['author'].encode('utf8'))
@@ -182,6 +184,7 @@ def load_and_commit_new_revisions(
     cursor,
     web_id: int,
     horizon: Optional[datetime] = None,
+    include_ip: bool = False,
 ) -> NoReturn:
   """
   Arguments:
@@ -196,6 +199,7 @@ def load_and_commit_new_revisions(
       If given, only consider revisions with prior revision time (revised_at).
       This should be about a minute behind current time.
       This helps prevent missing revision updates with identical revision time.
+  * include_ip: whether to include the author IP in the commit message for each revision.
   """
   pos = get_current_position(repo)
   logger.info(f'Current revision position: {pos}')
@@ -219,7 +223,7 @@ where idx.web_id = %s\
   horizon_msg = f'before {horizon} ' if horizon else ''
   logger.info(f'Loading revisions {horizon_msg}from database.')
   for revision in query_iterator(cursor, query, params):
-    commit_revision(repo, revision)
+    commit_revision(repo, revision, include_ip)
 
 # begin html repository functions
 
@@ -310,8 +314,9 @@ def setup_logging(verbose):
   type=click.Path(exists = True, path_type = Path),
   default=os.path.expanduser("~/.instiki2git"),
   help="Path to configuration file.")
+@click.option('--include-ip', is_flag = True)
 @click.option('-v', '--verbose', count = True)
-def cli(config_file, verbose):
+def cli(config_file, include_ip, verbose):
   setup_logging(verbose)
 
   config = read_config(config_file)
@@ -326,7 +331,7 @@ def cli(config_file, verbose):
   connection = get_db_conn(db_config)
 
   with connection.cursor() as cursor:
-    load_and_commit_new_revisions(repo, cursor, web_id)
+    load_and_commit_new_revisions(repo, cursor, web_id, include_ip = include_ip)
 
   logger.info('Pushing repository.')
   dulwich.porcelain.push(repo = repo)
