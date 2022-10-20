@@ -103,6 +103,23 @@ def commit_message_decode(msg: bytes) -> dict[str, str]:
 
   return dict(map(f, msg.splitlines()))
 
+def add_file(repo: dulwich.repo.Repo, path: Path, content: bytes | str) -> NoReturn:
+  """
+  Create a file in the given repository and stage it.
+  This creates all needed parent directories.
+
+  Note: the given path must be relative to the repository path.
+  """
+  for ancestor in reversed(path.parents):
+    ancestor.mkdir(exist_ok = True)
+
+  if isinstance(content, str):
+    path.write_text(content, encoding = 'utf8')
+  else:
+    path.write_bytes(content)
+
+  repo.stage(path)
+
 # These are the reserved bytes in git commit authors and committers.
 git_identity_code = PercentCode(reserved = map(ord, ['\0', '\n', '<', '>']))
 
@@ -111,20 +128,9 @@ def commit_revision(repo: dulwich.repo.Repo, revision: dict):
   id = revision['id']
   logger.info(f'Committing revision {id}.')
 
-  dir_pages = Path(repo.path) / 'pages'
-  dir_pages.mkdir(exist_ok = True)
-
-  def add_file(filename: str, content: bytes | str):
-    path = dir_pages / filename
-    if isinstance(content, str):
-      path.write_text(content, encoding = 'utf8')
-    else:
-      path.write_bytes(content)
-    repo.stage(Path('pages') / filename)
-
   page_id = revision['page_id']
-  add_file(f'{page_id}.md', revision['content'])
-  add_file(f'{page_id}.meta', commit_message_encode({'Name': revision['name']}))
+  add_file(repo, Path('pages') / f'{page_id}.md', revision['content'])
+  add_file(repo, Path('pages') / f'{page_id}.meta', commit_message_encode({'Name': revision['name']}))
 
   # git insists on an email address, so we add an empty one.
   def with_empty_email(xs):
