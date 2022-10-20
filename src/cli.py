@@ -1,6 +1,6 @@
 import os,errno
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import configparser
 import pymysql.cursors
 import dulwich.repo
@@ -314,9 +314,10 @@ def setup_logging(verbose):
   type=click.Path(exists = True, path_type = Path),
   default=os.path.expanduser("~/.instiki2git"),
   help="Path to configuration file.")
+@click.option('--safety-interval', type = int, default = 300, show_default = True)
 @click.option('--include-ip', is_flag = True)
 @click.option('-v', '--verbose', count = True)
-def cli(config_file, include_ip, verbose):
+def cli(config_file, safety_interval, include_ip, verbose):
   setup_logging(verbose)
 
   config = read_config(config_file)
@@ -331,7 +332,13 @@ def cli(config_file, include_ip, verbose):
   connection = get_db_conn(db_config)
 
   with connection.cursor() as cursor:
-    load_and_commit_new_revisions(repo, cursor, web_id, include_ip = include_ip)
+    load_and_commit_new_revisions(
+      repo,
+      cursor,
+      web_id,
+      horizon = datetime.now() - timedelta(minutes = safety_interval),
+      include_ip = include_ip
+    )
 
   logger.info('Pushing repository.')
   dulwich.porcelain.push(repo = repo)
