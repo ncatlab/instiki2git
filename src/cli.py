@@ -128,9 +128,9 @@ def commit_revision(repo: dulwich.repo.Repo, revision: dict):
   id = revision['id']
   logger.info(f'Committing revision {id}.')
 
-  page_id = revision['page_id']
-  add_file(repo, Path('pages') / f'{page_id}.md', revision['content'])
-  add_file(repo, Path('pages') / f'{page_id}.meta', commit_message_encode({'Name': revision['name']}))
+  path = Path('pages') / str(revision['page_id'])
+  add_file(repo, path / 'content.md', revision['content'])
+  add_file(repo, path / 'name', revision['name'])
 
   # git insists on an email address, so we add an empty one.
   def with_empty_email(xs):
