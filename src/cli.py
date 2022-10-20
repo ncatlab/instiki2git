@@ -10,10 +10,13 @@ import requests
 import re
 from pathlib import Path
 from typing import Any, Iterable, NoReturn, Optional, Tuple
+import logging
 import sys
 
 from instiki2git.percent_code import PercentCode
 
+
+logger = logging.getLogger(__name__)
 
 def get_db_conn(db_config):
   return pymysql.connect(host=db_config["host"],
@@ -25,8 +28,10 @@ def get_db_conn(db_config):
                          use_unicode=True)
 
 def query_iterator(cursor, query: str, params: Iterable[Any] = None):
+  logger.debug(f'Query: {query}')
   if params:
     params = tuple(params)
+    logger.debug(f'Query parameters: {params}')
   cursor.execute(query, params)
   return cursor.fetchall()
 
@@ -103,6 +108,9 @@ git_identity_code = PercentCode(reserved = map(ord, ['\0', '\n', '<', '>']))
 
 def commit_revision(repo: dulwich.repo.Repo, revision: dict):
   """Commit a revision to a git repository."""
+  id = revision['id']
+  logger.info(f'Committing revision {id}.')
+
   dir_pages = Path(repo.path) / 'pages'
   dir_pages.mkdir(exist_ok = True)
 
@@ -186,7 +194,7 @@ def load_and_commit_new_revisions(
       This helps prevent missing revision updates with identical revision time.
   """
   pos = get_current_position(repo)
-  pos_msg = f' since{pos}' if pos else ''
+  logger.info(f'Current revision position: {pos}')
 
   # So sad (for multiple reasons).
   query = f'''\
@@ -204,6 +212,8 @@ where idx.web_id = %s\
     query += ' and idx.revised_at < %s'
     params.append(horizon)
 
+  horizon_msg = f'before {horizon} ' if horizon else ''
+  logger.info(f'Loading revisions {horizon_msg}from database.')
   for revision in query_iterator(cursor, query, params):
     commit_revision(repo, revision)
 
@@ -284,21 +294,37 @@ def read_config(config_file):
     "web_id": web_id,
     "web_http_url": web_http_url}
 
+def setup_logging(verbose):
+  logging.basicConfig()
+  logger.setLevel({
+    0: logging.WARNING,
+    1: logging.INFO,
+  }.get(verbose, logging.DEBUG))
+
 @click.command()
 @click.option("--config-file",
   type=click.Path(exists = True, path_type = Path),
   default=os.path.expanduser("~/.instiki2git"),
   help="Path to configuration file.")
-def cli(config_file):
+@click.option('-v', '--verbose', count = True)
+def cli(config_file, verbose):
+  setup_logging(verbose)
+
   config = read_config(config_file)
   repo_path = os.path.abspath(config["repo_path"])
   db_config = config["db_config"]
   web_id = config["web_id"]
 
+  logger.info('Reading repository.')
   repo = dulwich.repo.Repo(repo_path)
+
+  logger.info('Connecting to database.')
   connection = get_db_conn(db_config)
+
   with connection.cursor() as cursor:
     load_and_commit_new_revisions(repo, cursor, web_id)
+
+  logger.info('Pushing repository.')
   dulwich.porcelain.push(repo = repo)
 
 @click.command()
@@ -314,7 +340,10 @@ def cli(config_file):
   is_flag=True,
   default=False,
   help="Run in populate mode")
-def cli_html(config_file, latest_download_file, populate):
+@click.option('-v', '--verbose', count = True)
+def cli_html(config_file, latest_download_file, populate, verbose):
+  setup_logging(verbose)
+
   config = read_config(config_file)
   repo_path = os.path.abspath(config["repo_path"])
   html_repo_path = os.path.abspath(config["html_repo_path"])
