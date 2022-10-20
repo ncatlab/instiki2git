@@ -142,9 +142,7 @@ def commit_revision(repo: dulwich.repo.Repo, revision: dict):
   repo.do_commit(
     message = commit_message_encode({
       'Revision ID': str(revision['id']),
-      'Revision date': str(revision_date),
       'Page name': revision['name'],
-      'Author': revision['author'],
       'IP address': revision['ip'],
     }),
     committer = with_empty_email(b'instiki2git'),
