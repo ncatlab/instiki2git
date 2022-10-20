@@ -207,7 +207,7 @@ def load_and_commit_new_revisions(
   # So sad (for multiple reasons).
   query = f'''\
 select r.*, p.* \
-from revisions idx force index(quad) \
+from revisions idx force index(index_revisions_on_web_id_and_revised_at_and_id_and_page_id) \
 join revisions r on r.id = idx.id \
 join pages p on p.id = idx.page_id \
 where idx.web_id = %s\
