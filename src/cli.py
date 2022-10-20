@@ -319,6 +319,9 @@ def setup_logging(verbose):
 @click.option('-v', '--verbose', count = True)
 def cli(config_file, safety_interval, include_ip, verbose):
   setup_logging(verbose)
+  logger.debug(f'Safety interval (in seconds): {safety_interval}')
+  logger.debug(f'Include IPs: {include_ip}')
+  logger.debug(f'Verbosity level: {verbose}')
 
   config = read_config(config_file)
   repo_path = os.path.abspath(config["repo_path"])
