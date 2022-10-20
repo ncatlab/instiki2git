@@ -8,7 +8,7 @@ import click
 import requests
 import re
 
-import percent_code
+from instiki2git.percent_code import PercentCode
 
 def load_repo(repo_path):
   """
@@ -135,24 +135,33 @@ def load_revisions_between(db_config, web_id, start_after, stop_at):
   return revisions
 
 
+# Used by the following two functions.
+commit_data_key_code = PercentCode(reserved = map(ord, ['\0', '\n', ':']))
+commit_data_value_code = PercentCode(reserved = map(ord, ['\0', '\n']))
+
 def commit_message_encode(values: dict[str, str]) -> bytes:
   """Encode metadata in the commit message."""
-  from percent_code import commit_data_key as k, commit_data_value as v
-
-  return b''.join(
-    k.encode(key.encode('utf8')) + b': ' + v.encode(value.encode('utf8')) + b'\n'
-    for (key, value) in values.items()
+  return b''.join(b''.join([
+      commit_data_key_code.encode(key.encode('utf8')),
+      b': ',
+      commit_data_value_code.encode(value.encode('utf8')),
+      b'\n',
+    ]) for (key, value) in values.items()
   )
 
 def commit_message_decode(msg: bytes) -> dict[str, str]:
   """Decode metadata in the commit message."""
-  from percent_code import commit_data_key as k, commit_data_value as v
-
   def f(line):
     (key, value) = line.split(b': ', 1)
-    return (k.decode(key).decode('utf8'), v.decode(value).decode('utf8'))
+    return (
+      commit_data_key_code.decode(key).decode('utf8'),
+      commit_data_value_code.decode(value).decode('utf8'),
+    )
 
   return dict(map(f, msg.splitlines()))
+
+# These are the reserved bytes in git commit authors and committers.
+git_identity_code = PercentCode(reserved = map(ord, ['\0', '\n', '<', '>']))
 
 def commit_revision_to_repo(repo: git_repo, rev: dict):
   """Commit a revision to a git repository."""
@@ -179,7 +188,7 @@ def commit_revision_to_repo(repo: git_repo, rev: dict):
     }),
     committer = with_empty_email(b'instiki2git'),
     author = with_empty_email(
-      percent_code.git_identity.encode(rev['author'].encode('utf8'))
+      git_identity_code.encode(rev['author'].encode('utf8'))
     ),
   )
 
