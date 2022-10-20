@@ -1,6 +1,6 @@
 import os,errno
 import time
-import datetime
+from datetime import datetime, timezone
 import configparser
 import pymysql.cursors
 import dulwich.repo
@@ -9,57 +9,26 @@ import click
 import requests
 import re
 from pathlib import Path
+from typing import Any, Iterable, NoReturn, Optional, Tuple
+import sys
 
 from instiki2git.percent_code import PercentCode
 
+
 def get_db_conn(db_config):
-  db_conn = pymysql.connect(host=db_config["host"],
-                            user=db_config["user"],
-                            password=db_config["password"],
-                            db=db_config["db"],
-                            charset=db_config["charset"],
-                            cursorclass=pymysql.cursors.SSDictCursor,
-                            use_unicode=True)
-  return db_conn
+  return pymysql.connect(host=db_config["host"],
+                         user=db_config["user"],
+                         password=db_config["password"],
+                         db=db_config["db"],
+                         charset=db_config["charset"],
+                         cursorclass=pymysql.cursors.SSDictCursor,
+                         use_unicode=True)
 
-def load_new_revisions(db_config, web_id, latest_revision_id=0):
-  """
-  Load all revisions, using the given database configuration to connect.  If a
-  `latest_revision_id` is provided, only loads revisions committed after that.
-  """
-  db_conn = get_db_conn(db_config)
-  try:
-    with db_conn.cursor() as cursor:
-      query = ("SELECT r.id,r.page_id,r.author,r.ip,r.revised_at,r.content,p.name"
-        " FROM revisions r INNER JOIN pages p ON (r.page_id=p.id)"
-        " WHERE r.web_id=%s AND r.id>%s"
-        " ORDER BY r.id") % (web_id, latest_revision_id)
-      cursor.execute(query)
-      revisions = cursor.fetchall()
-  finally:
-    db_conn.close()
-  return revisions
-
-def load_new_revisions_before(db_config, web_id, revision_id, before):
-  """
-  Load all revisions newer than the given `revision_id`,
-  that where 'updated_at' a time before `before`.
-  """
-  db_conn = get_db_conn(db_config)
-  try:
-    with db_conn.cursor() as cursor:
-      time = before.strftime('%Y-%m-%d %H:%M:%S')
-      date_selector = " AND r.updated_at < '%s'" % time
-      query = ("SELECT r.id,r.page_id,r.author,r.ip,r.revised_at,r.content,p.name"
-        " FROM revisions r INNER JOIN pages p ON (r.page_id=p.id)"
-        " WHERE r.web_id=%s%s"
-        " AND r.id>%s"
-        " ORDER BY r.id") % (web_id, date_selector, revision_id)
-      cursor.execute(query)
-      revisions = cursor.fetchall()
-  finally:
-    db_conn.close()
-  return revisions
+def query_iterator(cursor, query: str, params: Iterable[Any] = None):
+  if params:
+    params = tuple(params)
+  cursor.execute(query, params)
+  return cursor.fetchall()
 
 def load_new_revisions_by_time(db_config, web_id, latest_revision_time=None):
   """
@@ -104,7 +73,6 @@ def load_revisions_between(db_config, web_id, start_after, stop_at):
     db_conn.close()
   return revisions
 
-
 # Used by the following two functions.
 commit_data_key_code = PercentCode(reserved = map(ord, ['\0', '\n', ':']))
 commit_data_value_code = PercentCode(reserved = map(ord, ['\0', '\n']))
@@ -133,7 +101,7 @@ def commit_message_decode(msg: bytes) -> dict[str, str]:
 # These are the reserved bytes in git commit authors and committers.
 git_identity_code = PercentCode(reserved = map(ord, ['\0', '\n', '<', '>']))
 
-def commit_revision_to_repo(repo: dulwich.repo.Repo, rev: dict):
+def commit_revision(repo: dulwich.repo.Repo, revision: dict):
   """Commit a revision to a git repository."""
   dir_pages = Path(repo.path) / 'pages'
   dir_pages.mkdir(exist_ok = True)
@@ -146,97 +114,104 @@ def commit_revision_to_repo(repo: dulwich.repo.Repo, rev: dict):
       path.write_bytes(content)
     repo.stage(Path('pages') / filename)
 
-  page_id = rev['page_id']
-  add_file(f'{page_id}.md', rev['content'])
-  add_file(f'{page_id}.meta', commit_message_encode({'Name': rev['name']}))
+  page_id = revision['page_id']
+  add_file(f'{page_id}.md', revision['content'])
+  add_file(f'{page_id}.meta', commit_message_encode({'Name': revision['name']}))
 
-  # dulwich and github insist on an email address, we add an empty one.
+  # git insists on an email address, so we add an empty one.
   def with_empty_email(xs):
     return xs + b' <>'
 
   # We assume datetime fields in the database use UTC.
-  revision_date = rev['revised_at'].replace(tzinfo = datetime.timezone.utc)
+  revision_date = revision['revised_at'].replace(tzinfo = timezone.utc)
 
   repo.do_commit(
     message = commit_message_encode({
-      'Revision ID': str(rev['id']),
+      'Revision ID': str(revision['id']),
       'Revision date': str(revision_date),
-      'Page name': rev['name'],
-      'Author': rev['author'],
-      'IP address': rev['ip'],
+      'Page name': revision['name'],
+      'Author': revision['author'],
+      'IP address': revision['ip'],
     }),
     committer = with_empty_email(b'instiki2git'),
     author = with_empty_email(
-      git_identity_code.encode(rev['author'].encode('utf8'))
+      git_identity_code.encode(revision['author'].encode('utf8'))
     ),
     author_timestamp = revision_date.timestamp(),
     author_timezone = 0,
   )
 
-def read_latest_revision_id(latest_revision_file):
+def get_head(repo: dulwich.repo.Repo) -> Optional[bytes]:
   try:
-    return int(latest_revision_file.read_text())
-  except FileNotFoundError:
-    return 0
+    return repo.head()
+  except KeyError:
+    return None
 
-def check_time_file(latest_time_file):
-  if not latest_time_file.exists():
-    raise Exception(f"Given path '{latest_time_file}' of file with time up until which everything is committed does not exist.")
+def get_commit(repo: dulwich.repo.Repo, sha: bytes) -> dulwich.repo.Commit:
+  x = repo.get_object(sha)
+  if not isinstance(x, dulwich.repo.Commit):
+    raise TypeError('does not refer to a commit: {sha.decode()}')
+  return x
 
-def read_latest_time(latest_time_file):
-  check_time_file(latest_time_file)
-  file_content = latest_time_file.read_text()
-  if file_content == "updating":
-    raise Exception("instikit2git didn't properly finish.\n" +
-                    "The latest-time-file '{latest_time_file}' still contains 'updating' instead of a time. \n" +
-                    "You have to manually figure out what happened and fix it. ")
-  try:
-    return datetime.datetime.strptime(file_content, '%Y-%m-%d %H:%M:%S')
-  except ValueError:
-    raise Exception("Time of latest committed revision could not be read. \n" +
-                    "Format is '%Y-%m-%d %H:%M:%S'. \n" +
-                    "Trailing newline is not supported.")
-
-def write_updating(latest_time_file):
-  check_time_file(latest_time_file)
-  latest_time_file.write_text('updating')
-
-def write_time_to_file(formatted_time, latest_time_file):
+def get_current_position(repo: dulwich.repo.Repo) -> Optional[Tuple[datetime, int]]:
   """
-  Write the '%Y-%m-%d %H:%M:%S' formatted time `formatted_time` into the file `latest_time_file`.
+  Return the tuple of (revised_at, id) for the revision encoded by the head commit.
+  Returns None if there is no head (e.g. if the repository is empty).
   """
-  check_time_file(latest_time_file)
-  latest_time_file.write_text(formatted_time)
+  ref = get_head(repo)
+  if ref:
+    commit = get_commit(repo, ref)
+    revision_date = datetime.fromtimestamp(commit.author_time)
+    metadata = commit_message_decode(commit.message)
+    return (revision_date, metadata['Revision ID'])
 
+def load_and_commit_new_revisions(
+    repo: dulwich.repo.Repo,
+    cursor,
+    web_id: int,
+    horizon: Optional[datetime] = None,
+) -> NoReturn:
+  """
+  Arguments:
+  * repo:
+      The repository to modify.
+      Commits are made to the current branch.
+  * web_id: the id of the web from which to load revisions.
+  * cursor:
+      The database connection cursor.
+      Must return a dictionary for each queried row.
+  * horizon:
+      If given, only consider revisions with prior revision time (revised_at).
+      This should be about a minute behind current time.
+      This helps prevent missing revision updates with identical revision time.
+  """
+  pos = get_current_position(repo)
+  pos_msg = f' since{pos}' if pos else ''
 
-def load_and_commit_new_revisions(repo_path, db_config, web_id,
-                                  latest_revision_file,
-                                  latest_time_file):
-  latest_revision_id = read_latest_revision_id(latest_revision_file)
-  latest_committed_time = read_latest_time(latest_time_file)
-  write_updating(latest_time_file)
+  # So sad (for multiple reasons).
+  query = f'''\
+select r.*, p.* \
+from revisions idx force index(quad) \
+join revisions r on r.id = idx.id \
+join pages p on p.id = idx.page_id \
+where idx.web_id = %s\
+'''
+  params = [web_id]
+  if pos:
+    query += ' and (idx.revised_at, idx.id) > (%s, %s)'
+    params.extend(pos)
+  if horizon:
+    query += ' and idx.revised_at < %s'
+    params.append(horizon)
 
-  # the following time should be at least one second behind 'now', to ensure that
-  # no updates written after the query in 'load_revisions_between' are missed.
-  twentyseven_hours_ago = datetime.datetime.now() - datetime.timedelta(hours=27)
-
-  formatted_end = twentyseven_hours_ago.strftime('%Y-%m-%d %H:%M:%S')
-  formatted_start = latest_committed_time.strftime('%Y-%m-%d %H:%M:%S')
-  revs = load_revisions_between(db_config, web_id,
-                                start_after=formatted_start,
-                                stop_at=formatted_end)
-
-  repo = dulwich.repo.Repo(repo_path)
-  for rev in revs:
-    commit_revision_to_repo(repo, rev)
-  dulwich.porcelain.push(repo = repo)
-  write_time_to_file(formatted_end, latest_time_file)
+  for revision in query_iterator(cursor, query, params):
+    commit_revision(repo, revision)
 
 # begin html repository functions
 
 def read_latest_download_file(latest_download_file):
   try:
-    datetime.datetime.fromtimestamp(latest_download_file.read_text())
+    datetime.fromtimestamp(latest_download_file.read_text())
   except FileNotFoundError:
     return 0
 
@@ -314,21 +289,17 @@ def read_config(config_file):
   type=click.Path(exists = True, path_type = Path),
   default=os.path.expanduser("~/.instiki2git"),
   help="Path to configuration file.")
-@click.option("--latest-revision-file",
-  type=click.Path(path_type = Path),
-  default=Path('/tmp/instiki2git'),
-  help="Path to a file containing the ID of the last committed revision.")
-@click.option("--latest-time-file",
-  type=click.Path(path_type = Path),
-  default=Path('/tmp/instiki2git-time'),
-  help="Path to a file containing the time of the last committed revision update.")
-def cli(config_file, latest_revision_file, latest_time_file):
+def cli(config_file):
   config = read_config(config_file)
   repo_path = os.path.abspath(config["repo_path"])
   db_config = config["db_config"]
   web_id = config["web_id"]
-  load_and_commit_new_revisions(repo_path, db_config, web_id,
-                                latest_revision_file, latest_time_file)
+
+  repo = dulwich.repo.Repo(repo_path)
+  connection = get_db_conn(db_config)
+  with connection.cursor() as cursor:
+    load_and_commit_new_revisions(repo, cursor, web_id)
+  dulwich.porcelain.push(repo = repo)
 
 @click.command()
 @click.option("--config-file",
