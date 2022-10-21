@@ -23,8 +23,8 @@ def get_db_conn(db_config):
                          user=db_config["user"],
                          password=db_config["password"],
                          db=db_config["db"],
-                         charset=db_config["charset"],
                          cursorclass=pymysql.cursors.SSDictCursor,
+                         charset='utf8',
                          use_unicode=True)
 
 def query_iterator(cursor, query: str, params: Iterable[Any] = None):
@@ -291,8 +291,7 @@ def read_config(config_file):
   db_config = {"host": config_parser.get("database", "host"),
     "db": config_parser.get("database", "db"),
     "user": config_parser.get("database", "user"),
-    "password": config_parser.get("database", "password"),
-    "charset": config_parser.get("database", "charset")}
+    "password": config_parser.get("database", "password")}
   web_http_url = config_parser.get("web", "http_url")
   return {
     "repo_path": repo_path,
