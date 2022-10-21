@@ -18,11 +18,11 @@ from instiki2git.percent_code import PercentCode
 
 logger = logging.getLogger(__name__)
 
-def get_db_conn(db_config):
-  return pymysql.connect(host=db_config["host"],
-                         user=db_config["user"],
-                         password=db_config["password"],
-                         db=db_config["db"],
+def get_db_conn(host, user, password, database):
+  return pymysql.connect(host=host,
+                         user=user,
+                         password=password,
+                         database=database,
                          cursorclass=pymysql.cursors.SSDictCursor,
                          charset='utf8',
                          use_unicode=True)
@@ -40,7 +40,7 @@ def load_new_revisions_by_time(db_config, web_id, latest_revision_time=None):
   Load all revisions, using the given database configuration to connect.  If a
   `latest_revision_time` is provided, only loads revisions committed after that.
   """
-  db_conn = get_db_conn(db_config)
+  db_conn = get_db_conn(**db_config)
   try:
     with db_conn.cursor() as cursor:
       date_selector = ""
@@ -63,7 +63,7 @@ def load_revisions_between(db_config, web_id, start_after, stop_at):
   equal to `stop_at`, using the given database configuration to connect.
   `start_after` and `stop_at` have to be in the format '%Y-%m-%d %H:%M:%S'.
   """
-  db_conn = get_db_conn(db_config)
+  db_conn = get_db_conn(**db_config)
   try:
     with db_conn.cursor() as cursor:
       query = ("SELECT r.id,r.page_id,r.author,r.ip,r.revised_at,r.content,p.name"
@@ -288,15 +288,10 @@ def read_config(config_file):
   config_parser.read(config_file)
   repo_path = config_parser.get("repository", "path")
   html_repo_path = config_parser.get("html_repository", "path")
-  db_config = {"host": config_parser.get("database", "host"),
-    "db": config_parser.get("database", "db"),
-    "user": config_parser.get("database", "user"),
-    "password": config_parser.get("database", "password")}
   web_http_url = config_parser.get("web", "http_url")
   return {
     "repo_path": repo_path,
     "html_repo_path": html_repo_path,
-    "db_config": db_config,
     "web_http_url": web_http_url}
 
 def setup_logging(verbose):
@@ -311,25 +306,33 @@ def setup_logging(verbose):
   type=click.Path(exists = True, path_type = Path),
   default=os.path.expanduser("~/.instiki2git"),
   help="Path to configuration file.")
+@click.option('-h', '--host', type = str)
+@click.option('-u', '--user', type = str)
+@click.option('-p', '--password', type = str)
+@click.option('-d', '--database', type = str, required = True)
 @click.option('-w', '--web-id', type = int, required = True)
 @click.option('--safety-interval', type = int, default = 300, show_default = True)
 @click.option('--include-ip', is_flag = True)
 @click.option('-v', '--verbose', count = True)
-def cli(config_file, web_id, safety_interval, include_ip, verbose):
+def cli(config_file, host, user, password, database, web_id, safety_interval, include_ip, verbose):
   setup_logging(verbose)
+  logger.debug(f'Host: {host}')
+  logger.debug(f'User: {user}')
+  # Do not log password.
+  #logger.debug(f'Password': {password}')
+  logger.debug(f'Database: {database}')
   logger.debug(f'Safety interval (in seconds): {safety_interval}')
   logger.debug(f'Include IPs: {include_ip}')
   logger.debug(f'Verbosity level: {verbose}')
 
   config = read_config(config_file)
   repo_path = os.path.abspath(config["repo_path"])
-  db_config = config["db_config"]
 
   logger.info('Reading repository.')
   repo = dulwich.repo.Repo(repo_path)
 
   logger.info('Connecting to database.')
-  connection = get_db_conn(db_config)
+  connection = get_db_conn(host = host, user = user, password = password, database = database)
 
   with connection.cursor() as cursor:
     load_and_commit_new_revisions(
@@ -348,6 +351,10 @@ def cli(config_file, web_id, safety_interval, include_ip, verbose):
   type=click.Path(exists = True, path_type = Path),
   default=Path('~/.instiki2git').expanduser(),
   help="Path to configuration file.")
+@click.option('-h', '--host', type = str)
+@click.option('-u', '--user', type = str)
+@click.option('-p', '--password', type = str)
+@click.option('-d', '--database', type = str, required = True)
 @click.option('-w', '--web-id', type = int, required = True)
 @click.option("--latest-download-file",
   type=click.Path(path_type = Path),
@@ -358,13 +365,18 @@ def cli(config_file, web_id, safety_interval, include_ip, verbose):
   default=False,
   help="Run in populate mode")
 @click.option('-v', '--verbose', count = True)
-def cli_html(config_file, web_id, latest_download_file, populate, verbose):
+def cli_html(config_file, host, user, password, database, web_id, latest_download_file, populate, verbose):
   setup_logging(verbose)
 
   config = read_config(config_file)
   repo_path = os.path.abspath(config["repo_path"])
   html_repo_path = os.path.abspath(config["html_repo_path"])
-  db_config = config["db_config"]
+  db_config = {
+    'host': host,
+    'user': user,
+    'password': password,
+    'database': database,
+  }
   web_http_url = config["web_http_url"]
   if web_http_url.endswith("/"):
     web_http_url = web_http_url[:-1]
