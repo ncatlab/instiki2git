@@ -106,9 +106,11 @@ def commit_revision(repo: dulwich.repo.Repo, revision: dict, include_ip: bool):
 
     # We assume datetime fields in the database use UTC.
     revision_date = revision['revised_at'].replace(tzinfo = timezone.utc)
+    update_date = revision['updated_at'].replace(tzinfo = timezone.utc)
 
     def fields():
-        yield ('Revision ID', str(revision['id']))
+        yield ('Revision ID', str(id))
+        yield ('Update date', str(update_date))
         yield ('Page name', revision['name'])
         if include_ip:
             yield ('IP address', revision['ip'])
@@ -137,15 +139,14 @@ def get_commit(repo: dulwich.repo.Repo, sha: bytes) -> dulwich.repo.Commit:
 
 def get_current_position(repo: dulwich.repo.Repo) -> Optional[Tuple[datetime, int]]:
     """
-    Return the tuple of (revised_at, id) for the revision encoded by the head commit.
+    Return the tuple of (updated_at, id) for the revision encoded by the head commit.
     Returns None if there is no head (e.g. if the repository is empty).
     """
     ref = get_head(repo)
     if ref:
         commit = get_commit(repo, ref)
-        revision_date = datetime.fromtimestamp(commit.author_time)
         metadata = commit_message_decode(commit.message)
-        return (revision_date, metadata['Revision ID'])
+        return (metadata['Update date'], metadata['Revision ID'])
 
 def load_and_commit_new_revisions(
         repo: dulwich.repo.Repo,
@@ -164,7 +165,7 @@ def load_and_commit_new_revisions(
             The database connection cursor.
             Must return a dictionary for each queried row.
     * horizon:
-            If given, only consider revisions with prior revision time (revised_at).
+            If given, only consider revisions with prior update time (updated_at).
             This should be about a minute behind current time.
             This helps prevent missing revision updates with identical revision time.
     * include_ip: whether to include the author IP in the commit message for each revision.
@@ -175,18 +176,19 @@ def load_and_commit_new_revisions(
     # So sad (for multiple reasons).
     query = '''\
 select r.*, p.* \
-from revisions idx force index(index_revisions_on_web_id_and_revised_at_and_id_and_page_id) \
+from revisions idx force index(index_revisions_on_web_id_and_updated_at_and_id_and_page_id) \
 join revisions r on r.id = idx.id \
 join pages p on p.id = idx.page_id \
 where idx.web_id = %s\
 '''
     params = [web_id]
     if pos:
-        query += ' and (idx.revised_at, idx.id) > (%s, %s)'
+        query += ' and (idx.updated_at, idx.id) > (%s, %s)'
         params.extend(pos)
     if horizon:
-        query += ' and idx.revised_at < %s'
+        query += ' and idx.updated_at < %s'
         params.append(horizon)
+    query += ' order by idx.updated_at, idx.id'
 
     horizon_msg = f'before {horizon} ' if horizon else ''
     logger.info(f'Loading revisions {horizon_msg}from database.')
