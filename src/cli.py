@@ -282,16 +282,6 @@ def html_repo_update(html_repo_path, db_config, web_id, web_http_url,
 
 # end html repository functions
 
-def read_config(config_file):
-  config_parser = configparser.RawConfigParser()
-  config_parser.read(config_file)
-  repo_path = config_parser.get("repository", "path")
-  html_repo_path = config_parser.get("html_repository", "path")
-  return {
-    "repo_path": repo_path,
-    "html_repo_path": html_repo_path,
-  }
-
 def setup_logging(verbose):
   logging.basicConfig()
   logger.setLevel({
@@ -300,10 +290,6 @@ def setup_logging(verbose):
   }.get(verbose, logging.DEBUG))
 
 @click.command()
-@click.option("--config-file",
-  type=click.Path(exists = True, path_type = Path),
-  default=os.path.expanduser("~/.instiki2git"),
-  help="Path to configuration file.")
 @click.option('-h', '--host', type = str)
 @click.option('-p', '--port', type = int)
 @click.option('-S', '--unix_socket', type = str)
@@ -325,11 +311,8 @@ def cli(config_file, host, port, unix_socket, user, password, database, web_id, 
   logger.debug(f'Include IPs: {include_ip}')
   logger.debug(f'Verbosity level: {verbose}')
 
-  config = read_config(config_file)
-  repo_path = os.path.abspath(config["repo_path"])
-
   logger.info('Reading repository.')
-  repo = dulwich.repo.Repo(repo_path)
+  repo = dulwich.repo.Repo(Path())
 
   logger.info('Connecting to database.')
   connection = get_db_conn(
@@ -354,10 +337,6 @@ def cli(config_file, host, port, unix_socket, user, password, database, web_id, 
   dulwich.porcelain.push(repo = repo)
 
 @click.command()
-@click.option("--config-file",
-  type=click.Path(exists = True, path_type = Path),
-  default=Path('~/.instiki2git').expanduser(),
-  help="Path to configuration file.")
 @click.option('-h', '--host', type = str)
 @click.option('-p', '--port', type = int)
 @click.option('-S', '--unix-socket', type = str)
@@ -366,6 +345,7 @@ def cli(config_file, host, port, unix_socket, user, password, database, web_id, 
 @click.option('-d', '--database', type = str, required = True)
 @click.option('-w', '--web-id', type = int, required = True)
 @click.option('-W', '--web-http-url', type = str, required = True)
+@click.option('-r', '--repo-path', type = click.Path(path_type = Path), required = True)
 @click.option("--latest-download-file",
   type=click.Path(path_type = Path),
   default=Path('/tmp/instiki2git-html'),
@@ -375,12 +355,9 @@ def cli(config_file, host, port, unix_socket, user, password, database, web_id, 
   default=False,
   help="Run in populate mode")
 @click.option('-v', '--verbose', count = True)
-def cli_html(config_file, host, port, unix_socket, user, password, database, web_id, web_http_url, latest_download_file, populate, verbose):
+def cli_html(config_file, host, port, unix_socket, user, password, database, web_id, web_http_url, latest_download_file, populate, verbose, repo_path):
   setup_logging(verbose)
 
-  config = read_config(config_file)
-  repo_path = os.path.abspath(config["repo_path"])
-  html_repo_path = os.path.abspath(config["html_repo_path"])
   db_config = {
     'host': host,
     'port': port,
@@ -392,8 +369,8 @@ def cli_html(config_file, host, port, unix_socket, user, password, database, web
   if web_http_url.endswith("/"):
     web_http_url = web_http_url[:-1]
   if populate:
-    html_repo_populate(repo_path, html_repo_path, web_http_url,
+    html_repo_populate(repo_path, Path(), web_http_url,
       latest_download_file)
   else:
-    html_repo_update(html_repo_path, db_config, web_id, web_http_url,
+    html_repo_update(Path(), db_config, web_id, web_http_url,
       latest_download_file)
