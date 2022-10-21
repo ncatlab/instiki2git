@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 import pymysql.cursors
 import requests
-from typing import Any, Iterable, NoReturn, Optional, Tuple
+from typing import Any, Iterable, NoReturn, Optional, Tuple, Union
 
 from instiki2git.percent_code import PercentCode
 
@@ -87,7 +87,7 @@ def get_commit(repo: dulwich.repo.Repo, id: bytes) -> dulwich.repo.Commit:
         raise TypeError('does not refer to a commit: {sha.decode()}')
     return obj
 
-def git_add_file(repo: dulwich.repo.Repo, path: Path, content: bytes | str) -> NoReturn:
+def git_add_file(repo: dulwich.repo.Repo, path: Path, content: Union[bytes, str]) -> NoReturn:
     """
     Create a file in the given repository and stage it.
     This creates all needed parent directories.
