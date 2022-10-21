@@ -287,11 +287,10 @@ def read_config(config_file):
   config_parser.read(config_file)
   repo_path = config_parser.get("repository", "path")
   html_repo_path = config_parser.get("html_repository", "path")
-  web_http_url = config_parser.get("web", "http_url")
   return {
     "repo_path": repo_path,
     "html_repo_path": html_repo_path,
-    "web_http_url": web_http_url}
+  }
 
 def setup_logging(verbose):
   logging.basicConfig()
@@ -366,6 +365,7 @@ def cli(config_file, host, port, unix_socket, user, password, database, web_id, 
 @click.option('-p', '--password', type = str)
 @click.option('-d', '--database', type = str, required = True)
 @click.option('-w', '--web-id', type = int, required = True)
+@click.option('-W', '--web-http-url', type = str, required = True)
 @click.option("--latest-download-file",
   type=click.Path(path_type = Path),
   default=Path('/tmp/instiki2git-html'),
@@ -375,7 +375,7 @@ def cli(config_file, host, port, unix_socket, user, password, database, web_id, 
   default=False,
   help="Run in populate mode")
 @click.option('-v', '--verbose', count = True)
-def cli_html(config_file, host, port, unix_socket, user, password, database, web_id, latest_download_file, populate, verbose):
+def cli_html(config_file, host, port, unix_socket, user, password, database, web_id, web_http_url, latest_download_file, populate, verbose):
   setup_logging(verbose)
 
   config = read_config(config_file)
@@ -389,7 +389,6 @@ def cli_html(config_file, host, port, unix_socket, user, password, database, web
     'password': password,
     'database': database,
   }
-  web_http_url = config["web_http_url"]
   if web_http_url.endswith("/"):
     web_http_url = web_http_url[:-1]
   if populate:
