@@ -13,7 +13,7 @@ from instiki2git.percent_code import PercentCode
 
 logger: logging.Logger = logging.getLogger(__name__)
 
-# Database queries
+# Database queries.
 
 def query_iterator(
     cursor: pymysql.cursors.DictCursorMixin,
@@ -167,9 +167,9 @@ def revision_position(revision: dict[str, Any]) -> Position:
 def get_web_address(cursor: pymysql.cursors.DictCursorMixin, web_id: int) -> str:
     return query_singleton(cursor, 'select address from webs where id = %s', (web_id,))['address']
 
-def download_page(url: str) -> bytes:
+def download_page(session: requests.Session, url: str) -> bytes:
     logger.debug(f'Loading {url}.')
-    return requests.get(url).content
+    return session.get(url).content
 
 # Main work function.
 def load_commit_and_push(
@@ -270,11 +270,12 @@ where idx.web_id = %s\
 
         if last_revision:
             updated = True
+            session = requests.Session()
             address_base = http_url + '/' + get_web_address(web_id) + '/show_by_id/'
             for (page_id, revision) in to_update.items():
                 logger.info(f'Updating HTML for page {page_id}')
                 for (filename, content) in [
-                    ('content.html', download_page(address_base + page_id)),
+                    ('content.html', download_page(session, address_base + page_id)),
                     ('revision_id', str(revision['id'])),
                     ('name', revision['name']),
                 ]:
@@ -290,7 +291,7 @@ where idx.web_id = %s\
         logger.info('Pushing repository.')
         dulwich.porcelain.push(repo = repo)
 
-# Command-line interface
+# Command-line interface.
 def cli() -> NoReturn:
     parser = argparse.ArgumentParser(
         description = 'A tool for exporting an Instiki installation to a git repository.',
