@@ -1,29 +1,29 @@
-import os
-import time
-from datetime import datetime, timedelta, timezone
-import pymysql.cursors
-import dulwich.repo
-import dulwich.porcelain
 import argparse
-import requests
-from pathlib import Path
-from typing import Any, Iterable, NoReturn, Optional, Tuple
+from datetime import datetime, timedelta, timezone
+import dulwich.objects
+import dulwich.repo
 import logging
+from pathlib import Path
+import pymysql.cursors
+import requests
+from typing import Any, Iterable, NoReturn, Optional, Tuple
 
 from instiki2git.percent_code import PercentCode
 
 
-logger = logging.getLogger(__name__)
+logger: logging.Logger = logging.getLogger(__name__)
 
-def get_db_conn(**kwargs):
-    return pymysql.connect(
-        **kwargs,
-        cursorclass=pymysql.cursors.SSDictCursor,
-        charset = 'utf8',
-        use_unicode = True,
-    )
+# Database queries
 
-def query_iterator(cursor: pymysql.cursors.Cursor, query: str, params: Iterable[Any] = None) -> Iterable[dict[str, Any]]:
+def query_iterator(
+    cursor: pymysql.cursors.DictCursorMixin,
+    query: str,
+    params: Iterable[dict[str, str]] = None,
+) -> Iterable[dict[str, Any]]:
+    """
+    Run a query and return an iterator of result rows
+    This iterator needs to be exhausted before further queries can be made using the underlying connection.
+    """
     logger.debug(f'Query: {query}')
     if params:
         params = tuple(params)
@@ -31,47 +31,69 @@ def query_iterator(cursor: pymysql.cursors.Cursor, query: str, params: Iterable[
     cursor.execute(query, params)
     return iter(cursor)
 
-def load_new_revisions_by_time(cursor, web_id, latest_revision_time=None):
-    """
-    Load all revisions, using the given database configuration to connect.    If a
-    `latest_revision_time` is provided, only loads revisions committed after that.
-    """
-    date_selector = ""
-    if latest_revision_time:
-        time = latest_revision_time.strftime('%Y-%m-%d %H:%M:%S')
-        date_selector = " AND r.updated_at >= '%s'" % time
-    query = ("SELECT r.id,r.page_id,r.author,r.ip,r.revised_at,r.content,p.name"
-             " FROM revisions r INNER JOIN pages p ON (r.page_id=p.id)"
-             " WHERE r.web_id=%s%s"
-             " ORDER BY r.id") % (web_id, date_selector)
-    cursor.execute(query)
-    return cursor.fetchall()
+def query_singleton(
+    cursor: pymysql.cursors.DictCursorMixin,
+    query: str,
+    params: Iterable[dict[str, str]] = None,
+) -> dict[str, Any]:
+    """Run a query with exactly one result row."""
+    [result] = query_iterator(cursor, query, params)
+    return result
+
+# Commit message key-value coding.
 
 # Used by the following two functions.
-commit_data_key_code = PercentCode(reserved = map(ord, ['\0', '\n', ':']))
-commit_data_value_code = PercentCode(reserved = map(ord, ['\0', '\n']))
+commit_msg_key_code = PercentCode(reserved = map(ord, ['\0', '\n', ':']))
+commit_msg_value_code = PercentCode(reserved = map(ord, ['\0', '\n']))
 
 def commit_message_encode(values: dict[str, str]) -> bytes:
     """Encode metadata in the commit message."""
     return b''.join(b''.join([
-        commit_data_key_code.encode(key.encode('utf8')),
+        commit_msg_key_code.encode(key.encode('utf8')),
         b': ',
-        commit_data_value_code.encode(value.encode('utf8')),
+        commit_msg_value_code.encode(value.encode('utf8')),
         b'\n',
     ]) for (key, value) in values.items())
 
 def commit_message_decode(msg: bytes) -> dict[str, str]:
     """Decode metadata in the commit message."""
     def f(line):
+        key: str
+        value: str
         (key, value) = line.split(b': ', 1)
         return (
-            commit_data_key_code.decode(key).decode('utf8'),
-            commit_data_value_code.decode(value).decode('utf8'),
+            commit_msg_key_code.decode(key).decode('utf8'),
+            commit_msg_value_code.decode(value).decode('utf8'),
         )
 
     return dict(map(f, msg.splitlines()))
 
-def add_file(repo: dulwich.repo.Repo, path: Path, content: bytes | str) -> NoReturn:
+Position = Tuple[datetime, int]
+Position.__doc__ = """Positions represent a total ordering of revisions in time."""
+
+def commit_values_position_encode(position: Position) -> Iterable[Tuple[str, str]]:
+    (update_date, id) = position
+    yield ('Revision ID', str(id))
+    yield ('Update date', str(update_date))
+
+def commit_values_position_decode(values: dict[str, str]) -> Position:
+    return (datetime.fromisoformat(values['Update date']), int(values['Revision ID']))
+
+# git functions.
+
+def get_head(repo: dulwich.repo.Repo) -> Optional[bytes]:
+    try:
+        return repo.head()
+    except KeyError:
+        return None
+
+def get_commit(repo: dulwich.repo.Repo, sha: bytes) -> dulwich.repo.Commit:
+    sha_file: dulwich.objects.ShaFile = repo.get_object(sha)
+    if not isinstance(sha_file, dulwich.repo.Commit):
+        raise TypeError('does not refer to a commit: {sha.decode()}')
+    return sha_file
+
+def git_add_file(repo: dulwich.repo.Repo, path: Path, content: bytes | str) -> NoReturn:
     """
     Create a file in the given repository and stage it.
     This creates all needed parent directories.
@@ -91,96 +113,120 @@ def add_file(repo: dulwich.repo.Repo, path: Path, content: bytes | str) -> NoRet
 # These are the reserved bytes in git commit authors and committers.
 git_identity_code = PercentCode(reserved = map(ord, ['\0', '\n', '<', '>']))
 
-def commit_revision(repo: dulwich.repo.Repo, revision: dict, include_ip: bool):
-    """Commit a revision to a git repository."""
-    id = revision['id']
-    logger.info(f'Committing revision {id}.')
+def git_identity_with_empty_email(name: bytes) -> bytes:
+    """Format a git user identity without an email address."""
+    return name + b' <>'
 
-    path = Path('pages') / str(revision['page_id'])
-    add_file(repo, path / 'content.md', revision['content'])
-    add_file(repo, path / 'name', revision['name'])
+git_script_identity: bytes = git_identity_with_empty_email(b'instiki2git')
 
-    # git insists on an email address, so we add an empty one.
-    def with_empty_email(xs):
-        return xs + b' <>'
-
-    # We assume datetime fields in the database use UTC.
-    revision_date = revision['revised_at'].replace(tzinfo = timezone.utc)
-    update_date = revision['updated_at'].replace(tzinfo = timezone.utc)
-
-    def fields():
-        yield ('Revision ID', str(id))
-        yield ('Update date', str(update_date))
-        yield ('Page name', revision['name'])
-        if include_ip:
-            yield ('IP address', revision['ip'])
-
+def git_commit(
+    repo: dulwich.repo.Repo,
+    commit_values: Iterable[Tuple[str, str]],
+    author: str = None,
+    author_time: datetime = None,
+) -> NoReturn:
+    """
+    Perform a commit.
+    The message is formed by encoding the given commit values.
+    An optional author (without email) can be given.
+    """
     repo.do_commit(
-        message = commit_message_encode(dict(fields())),
-        committer = with_empty_email(b'instiki2git'),
-        author = with_empty_email(
-            git_identity_code.encode(revision['author'].encode('utf8'))
+        message = commit_message_encode(dict(commit_values)),
+        committer = git_script_identity,
+        author = None if author is None else git_identity_with_empty_email(
+            git_identity_code.encode(author.encode('utf8'))
         ),
-        author_timestamp = revision_date.timestamp(),
-        author_timezone = 0,
+        author_timestamp = None if author_time is None else author_time.timestamp(),
     )
 
-def get_head(repo: dulwich.repo.Repo) -> Optional[bytes]:
-    try:
-        return repo.head()
-    except KeyError:
-        return None
-
-def get_commit(repo: dulwich.repo.Repo, sha: bytes) -> dulwich.repo.Commit:
-    x = repo.get_object(sha)
-    if not isinstance(x, dulwich.repo.Commit):
-        raise TypeError('does not refer to a commit: {sha.decode()}')
-    return x
-
-def get_current_position(repo: dulwich.repo.Repo) -> Optional[Tuple[datetime, int]]:
+def get_current_position(repo: dulwich.repo.Repo) -> Optional[Position]:
     """
     Return the tuple of (updated_at, id) for the revision encoded by the head commit.
     Returns None if there is no head (e.g. if the repository is empty).
     """
-    ref = get_head(repo)
+    ref: bytes = get_head(repo)
     if ref:
-        commit = get_commit(repo, ref)
-        metadata = commit_message_decode(commit.message)
-        return (metadata['Update date'], metadata['Revision ID'])
+        commit: dulwich.objects.Commit = get_commit(repo, ref)
+        commit_values: dict[str, str] = commit_message_decode(commit.message)
+        return commit_values_position_decode(commit_values)
 
-def load_and_commit_new_revisions(
-        repo: dulwich.repo.Repo,
-        cursor: pymysql.cursors.Cursor,
-        web_id: int,
-        horizon: Optional[datetime] = None,
-        include_ip: bool = False,
+# Revision functions.
+
+def revision_datetime(revision: dict[str, Any], field: str) -> datetime:
+    """
+    Extract an aware (UTC) datetime object from a given field in the revision.
+    We assume datetime fields in the database use UTC.
+    """
+    return revision[field].replace(tzinfo = timezone.utc)
+
+def revision_position(revision: dict[str, Any]) -> Position:
+    return (revision_datetime(revision, 'updated_at'), revision['id'])
+
+# Other helper functions.
+
+def get_web_address(cursor: pymysql.cursors.DictCursorMixin, web_id: int) -> str:
+    return query_singleton(cursor, 'select address from webs where id = %s', (web_id,))['address']
+
+def download_page(url: str) -> bytes:
+    logger.debug(f'Loading {url}.')
+    return requests.get(url).content
+
+# Main work function.
+def load_commit_and_push(
+    repo: dulwich.repo.Repo,
+    cursor: pymysql.cursors.DictCursorMixin,
+    web_id: int,
+    horizon: Optional[datetime] = None,
+    include_ip: bool = False,
+    http_url: str = None,
+    html_mode: bool = False,
 ) -> NoReturn:
     """
     Arguments:
     * repo:
-            The repository to modify.
-            Commits are made to the current branch.
+        The repository to modify.
+        Commits are made to the current branch.
     * web_id: the id of the web from which to load revisions.
     * cursor:
-            The database connection cursor.
-            Must return a dictionary for each queried row.
+        The database connection cursor.
+        Must return a dictionary for each queried row.
     * horizon:
-            If given, only consider revisions with prior update time (updated_at).
-            This should be about a minute behind current time.
-            This helps prevent missing revision updates with identical revision time.
-    * include_ip: whether to include the author IP in the commit message for each revision.
+        If given, only consider revisions with prior update time (updated_at).
+        This should be about a minute behind current time.
+        This helps prevent missing revision updates with identical revision time.
+    * include_ip:
+        Whether to include the author IP in the commit message for each revision.
+        Only used in source mode.
+    * http_url:
+        URL prefix to use for html backup.
+        Only used in HTML mode.
+    * html_mode:
+        Back up rendered HTML pages instead of sources.
+        Note: do note mix source and html repositories.
     """
     pos = get_current_position(repo)
-    logger.info(f'Current revision position: {pos}')
+    logger.info(f'Current revision position: {pos}.')
 
-    # So sad (for multiple reasons).
-    query = '''\
-select r.*, p.* \
+    time_before_query = datetime.now(timezone.utc)
+    logger.debug(f'Time before query: {time_before_query}.')
+
+    horizon_msg = f'before {horizon} ' if horizon else ''
+    logger.info(f'Loading revisions {horizon_msg}from database.')
+
+    if not html_mode:
+        fields = 'r.*, p.*'
+    else:
+        # Exclude r.content.
+        # Not needed and main source of space consumption.
+        fields = 'r.id, r.updated_at, r.page_id, p.*'
+
+    # SQL printing, so sad.
+    query = f'''\
+select {fields} \
 from revisions idx force index(index_revisions_on_web_id_and_updated_at_and_id_and_page_id) \
 join revisions r on r.id = idx.id \
 join pages p on p.id = idx.page_id \
-where idx.web_id = %s \
-order by (idx.updated_at, idx.id)\
+where idx.web_id = %s\
 '''
     params = [web_id]
     if pos:
@@ -189,84 +235,78 @@ order by (idx.updated_at, idx.id)\
     if horizon:
         query += ' and idx.updated_at < %s'
         params.append(horizon)
+    revisions = query_iterator(cursor, query, params)
 
-    horizon_msg = f'before {horizon} ' if horizon else ''
-    logger.info(f'Loading revisions {horizon_msg}from database.')
-    for revision in query_iterator(cursor, query, params):
-        commit_revision(repo, revision, include_ip)
+    updated = False
+    if not html_mode:
+        for revision in revisions:
+            updated = True
+            id = revision['id']
+            logger.info(f'Committing revision {id}.')
 
-# begin html repository functions
+            for (filename, content) in [
+                ('content.md', revision['content']),
+                ('name', revision['name'])
+            ]:
+                git_add_file(repo, Path('pages') / str(revision['page_id']) / filename, content)
 
-def read_latest_download_file(latest_download_file):
-    try:
-        datetime.fromtimestamp(latest_download_file.read_text())
-    except FileNotFoundError:
-        return 0
+            def commit_values():
+                yield from commit_values_position_encode(revision_position(revision))
+                yield ('Page name', revision['name'])
+                if include_ip:
+                    yield ('IP address', revision['ip'])
 
-def write_latest_download_file(latest_download_file):
-    latest_download_file.write_text(str(time.time()))
+            git_commit(repo, commit_values(), revision['author'], revision_datetime(revision, 'revised_at'))
+    else:
+        to_update = dict()
+        last_revision = None
+        for revision in revisions:
+            to_update[revision['page_id']] = revision
+            last_revision = revision
 
-def download_html_page(page_id, html_repo_path, web_http_url):
-    r = requests.get("%s/show_by_id/%s" % (web_http_url, page_id))
-    page_path = html_repo_path / 'pages' / f'{page_id}.html'
-    page_path.write_bytes(r.content)
+        if last_revision:
+            updated = True
+            address_base = http_url + '/' + get_web_address(web_id) + '/show_by_id/'
+            for (page_id, revision) in to_update.items():
+                logger.info(f'Updating HTML for page {page_id}')
+                for (filename, content) in [
+                    ('content.html', download_page(address_base + page_id)),
+                    ('revision_id', str(revision['id'])),
+                    ('name', revision['name']),
+                ]:
+                    git_add_file(repo, Path('pages') / str(page_id) / filename, content)
 
-def download_and_stage_html_pages(pages_list, html_repo, html_repo_path, web_http_url):
-    for p in pages_list:
-        download_html_page(p, html_repo_path, web_http_url)
-    html_repo.stage(map(lambda p: "pages/%d.html" % p, pages_list))
+            def commit_values():
+                yield from commit_values_position_encode(revision_position(last_revision))
+                yield ('Comment', f'updated {len(to_update)} pages')
 
-def html_repo_populate(repo_path, html_repo_path, web_http_url, latest_download_file):
-    """
-    This is meant to be used in case the usual repository is already set up, and
-    but the html repository is not.    It will download the latest html version of
-    each page and save them all to the html repository as one commit.    It will
-    ignore pages that already have html versions downloaded.
-    """
-    write_latest_download_file(latest_download_file)
-    pages_list = map(lambda f: f[:-3], filter(
-        lambda f: (f.endswith(".md") and not os.path.isfile(os.path.join(html_repo_path, "pages", "%s.html" % f[:-3]))),
-        os.listdir(os.path.join(repo_path, "pages")),
-    ))
-    html_repo = dulwich.repo.Repo(html_repo_path)
-    download_and_stage_html_pages(pages_list, html_repo, html_repo_path, web_http_url)
-    html_repo.do_commit("Added current html versions.", "instiki2git <>")
+            git_commit(repo, commit_values(), time_before_query)
 
-def html_repo_update(html_repo_path, cursor, web_id, web_http_url, latest_download_file):
-    latest_download_time = read_latest_download_file(latest_download_file)
-    write_latest_download_file(latest_download_file)
-    revs = load_new_revisions_by_time(cursor, web_id, latest_download_time)
-    pages_list = {r["page_id"] for r in revs}
-    if pages_list:
-        html_repo = dulwich.repo.Repo(html_repo_path)
-        download_and_stage_html_pages(pages_list, html_repo, html_repo_path, web_http_url)
-        html_repo.do_commit("Updated %d pages." % len(pages_list), "instiki2git <>")
+    if updated:
+        logger.info('Pushing repository.')
+        dulwich.porcelain.push(repo = repo)
 
-# end html repository functions
-
-def cli():
+# Command-line interface
+def cli() -> NoReturn:
     parser = argparse.ArgumentParser(
         description = 'A tool for exporting an Instiki installation to a git repository.',
         add_help = False,
     )
+    parser.add_argument('--repo', type = Path, metavar = 'DIR', default = Path(), help = '''
+defaults to working directory
+''')
     parser.add_argument('--web-id', type = int, metavar = 'ID', required = True, help = 'ID of the web to back up')
     parser.add_argument('--html', action = 'store_true', help = 'back up html instead of source')
     parser.add_argument('--include-ip', action = 'store_true', help = '''
-include author IP in commit message for revisions
+Include author IP in the commit message for each revision.
+Source mode only.
 ''')
 
     g = parser.add_argument_group(title = 'HTML backup options')
-    g.add_argument('--populate', action = 'store_true', help = '''
-Populate HTML repository instead of updating it.
-This uses the source repository.
-''')
-    g.add_argument('--repo-html', type = Path, metavar = 'DIR')
-    g.add_argument('--latest-download-file', metavar = 'FILE', type = Path, help = '''
-File containing the time of the last HTML download.
-''')
-    g.add_argument('--http-url', type = str, metavar = 'URL', help = '''
-URL prefix to use for html backup.
-Example: https://ncatlab.org/nlab
+    g.add_argument('--http-url', type = str, metavar = 'URL', default = 'http://localhost', help = '''
+Base URL for downloading pages.
+HTML mode only.
+Defaults to http://localhost.
 ''')
 
     g = parser.add_argument_group(title = 'horizon options')
@@ -278,9 +318,6 @@ This helps prevent missing revisions that arrive out of order in the database or
     Only consider revisions older than the given UTC timestamp.
     Overrides `--safety-interval`.
 ''')
-
-    g = parser.add_argument_group(title = 'repository options')
-    g.add_argument('--repo', type = Path, metavar = 'DIR', required = True, help = 'required')
 
     g = parser.add_argument_group(title = 'database connection')
     g.add_argument('--host', type = str)
@@ -307,17 +344,17 @@ Print informational (specify once) or debug (specify twice) messages on stderr.
     }.get(args.verbose, logging.DEBUG))
 
     # Compute horizon.
-    horizon = {
-        True: datetime.utcfromtimestamp(args.horizon),
-        False: datetime.now() - timedelta(minutes = args.safety_interval),
-    }[args.horizon is not None]
+    if args.horizon is not None:
+        horizon = datetime.utcfromtimestamp(args.horizon)
+    else:
+        horizon = datetime.now() - timedelta(minutes = args.safety_interval)
     logger.debug(f'Horizon: {horizon}')
 
     logger.info('Reading repository.')
     repo = dulwich.repo.Repo(args.repo)
 
     logger.info('Connecting to database.')
-    connection = pymysql.connect(
+    connection: pymysql.Connection = pymysql.connect(
         host = args.host,
         port = args.port,
         unix_socket = args.unix_socket,
@@ -328,21 +365,14 @@ Print informational (specify once) or debug (specify twice) messages on stderr.
         charset = 'utf8',
         use_unicode = True,
     )
-    cursor = connection.cursor()
+    cursor: pymysql.cursors.DictCursorMixin = connection.cursor()
 
-    if not args.html:
-        load_and_commit_new_revisions(
-            repo,
-            cursor,
-            args.web_id,
-            horizon = horizon,
-            include_ip = args.include_ip,
-        )
-
-        logger.info('Pushing repository.')
-        dulwich.porcelain.push(repo = repo)
-    else:
-        if args.populate:
-            html_repo_populate(args.repo, args.html_repo, args.http_url, args.latest_download_file)
-        else:
-            html_repo_update(args.html_repo, cursor, args.web_id, args.http_url, args.latest_download_file)
+    load_commit_and_push(
+        repo,
+        cursor,
+        args.web_id,
+        horizon = horizon,
+        include_ip = args.include_ip,
+        http_url = args.http_url,
+        html_mode = args.html
+    )
