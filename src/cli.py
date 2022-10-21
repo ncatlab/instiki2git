@@ -297,13 +297,14 @@ def cli() -> NoReturn:
         add_help = False,
     )
     parser.add_argument('--repo', type = Path, metavar = 'DIR', default = Path(), help = '''
-defaults to working directory
+Defaults to working directory.
 ''')
-    parser.add_argument('--web-id', type = int, metavar = 'ID', required = True, help = 'ID of the web to back up')
-    parser.add_argument('--html', action = 'store_true', help = 'back up html instead of source')
+    parser.add_argument('--web-id', type = int, metavar = 'ID', required = True, help = 'ID of the web to back up.')
+    parser.add_argument('--html', action = 'store_true', help = 'Back up HTML instead of source.')
+
+    g = parser.add_argument_group(title = 'source backup options')
     parser.add_argument('--include-ip', action = 'store_true', help = '''
 Include author IP in the commit message for each revision.
-Source mode only.
 ''')
 
     g = parser.add_argument_group(title = 'HTML backup options')
@@ -315,7 +316,7 @@ Defaults to http://localhost.
 
     g = parser.add_argument_group(title = 'horizon options')
     g.add_argument('--safety-interval', type = int, metavar = 'SECONDS', default = 300, help = '''
-Only consider revisions older than the given time interval (default: 300s).
+Only consider revisions updated more than the given time interval in the past (default: 300s).
 This helps prevent missing revisions that arrive out of order in the database or have identical revision time.
 ''')
     g.add_argument('--horizon', type = int, help = '''
@@ -326,10 +327,10 @@ This helps prevent missing revisions that arrive out of order in the database or
     g = parser.add_argument_group(title = 'database connection')
     g.add_argument('--host', type = str)
     g.add_argument('--port', type = int)
-    g.add_argument('--unix_socket', type = Path, metavar = 'PATH', help = 'alternative to host and port')
-    g.add_argument('--user', type = str, help = 'not needed when authenticating via Unix domain socket')
+    g.add_argument('--unix-socket', type = Path, metavar = 'PATH', help = 'Alternative to host and port.')
+    g.add_argument('--user', type = str, help = 'Not needed when authenticating via Unix domain socket.')
     g.add_argument('--password', type = str)
-    g.add_argument('--database', type = str, required = True, help = 'required')
+    g.add_argument('--database', type = str, required = True, help = 'Required.')
 
     g = parser.add_argument_group(title = 'help and debugging')
     g.add_argument('-h', '--help', action = 'help', help = 'Show this help message and exit.')
@@ -361,7 +362,7 @@ Print informational (specify once) or debug (specify twice) messages on stderr.
     connection: pymysql.Connection = pymysql.connect(
         host = args.host,
         port = args.port,
-        unix_socket = args.unix_socket,
+        unix_socket = bytes(args.unix_socket),
         user = args.user,
         password = args.password,
         database = args.database,
