@@ -26,13 +26,13 @@ def get_db_conn(**kwargs):
     use_unicode = True,
   )
 
-def query_iterator(cursor, query: str, params: Iterable[Any] = None):
+def query_iterator(cursor: pymysql.cursors.Cursor, query: str, params: Iterable[Any] = None) -> Iterable[dict[str, Any]]:
   logger.debug(f'Query: {query}')
   if params:
     params = tuple(params)
     logger.debug(f'Query parameters: {params}')
   cursor.execute(query, params)
-  return cursor.fetchall()
+  return iter(cursor)
 
 def load_new_revisions_by_time(db_config, web_id, latest_revision_time=None):
   """
@@ -180,7 +180,7 @@ def get_current_position(repo: dulwich.repo.Repo) -> Optional[Tuple[datetime, in
 
 def load_and_commit_new_revisions(
     repo: dulwich.repo.Repo,
-    cursor,
+    cursor: pymysql.cursors.Cursor,
     web_id: int,
     horizon: Optional[datetime] = None,
     include_ip: bool = False,
