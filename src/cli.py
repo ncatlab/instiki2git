@@ -81,32 +81,28 @@ def commit_values_position_decode(values: dict[str, str]) -> Position:
 
 # git functions.
 
-def get_head(repo: dulwich.repo.Repo) -> Optional[bytes]:
-    try:
-        return repo.head()
-    except KeyError:
-        return None
-
-def get_commit(repo: dulwich.repo.Repo, sha: bytes) -> dulwich.repo.Commit:
-    sha_file: dulwich.objects.ShaFile = repo.get_object(sha)
-    if not isinstance(sha_file, dulwich.repo.Commit):
+def get_commit(repo: dulwich.repo.Repo, id: bytes) -> dulwich.repo.Commit:
+    obj: dulwich.objects.ShaFile = repo.get_object(id)
+    if not isinstance(obj, dulwich.repo.Commit):
         raise TypeError('does not refer to a commit: {sha.decode()}')
-    return sha_file
+    return obj
 
 def git_add_file(repo: dulwich.repo.Repo, path: Path, content: bytes | str) -> NoReturn:
     """
     Create a file in the given repository and stage it.
     This creates all needed parent directories.
 
-    Note: the given path must be relative to the repository path.
+    The given path must be relative and not contain any segments '.' or '..'.
+    It is interpreted relative to the repository path.
     """
+    logger.debug(f'Adding file at {path}.')
     for ancestor in reversed(path.parents):
-        ancestor.mkdir(exist_ok = True)
+        (repo.path / ancestor).mkdir(exist_ok = True)
 
     if isinstance(content, str):
-        path.write_text(content, encoding = 'utf8')
+        (repo.path / path).write_text(content, encoding = 'utf8')
     else:
-        path.write_bytes(content)
+        (repo.path / path).write_bytes(content)
 
     repo.stage(path)
 
@@ -130,6 +126,7 @@ def git_commit(
     The message is formed by encoding the given commit values.
     An optional author (without email) can be given.
     """
+    logger.debug('Committing.')
     repo.do_commit(
         message = commit_message_encode(dict(commit_values)),
         committer = git_script_identity,
@@ -144,11 +141,12 @@ def get_current_position(repo: dulwich.repo.Repo) -> Optional[Position]:
     Return the tuple of (updated_at, id) for the revision encoded by the head commit.
     Returns None if there is no head (e.g. if the repository is empty).
     """
-    ref: bytes = get_head(repo)
-    if ref:
-        commit: dulwich.objects.Commit = get_commit(repo, ref)
-        commit_values: dict[str, str] = commit_message_decode(commit.message)
-        return commit_values_position_decode(commit_values)
+    commit: dulwich.repo.Commit = repo.get_object(repo.head())
+    if commit.message.lower().startswith(b'initial commit'):
+        return None
+
+    commit_values: dict[str, str] = commit_message_decode(commit.message)
+    return commit_values_position_decode(commit_values)
 
 # Revision functions.
 
@@ -171,15 +169,32 @@ def download_page(url: str) -> bytes:
     logger.debug(f'Loading {url}.')
     return requests.get(url).content
 
+def partition_id(sizes: Iterable[int], id) -> list[Path]:
+    """
+    Partition the decimal representation of the given id into a relative path.
+    The given sizes control how many digits are used for each segment, starting with the least significant.
+
+    Example:
+        partition_id([2, 3], 4567) = Path() / '67' / '045'.
+    """
+    def f() -> Iterable[str]:
+        nonlocal id
+        for size in sizes:
+            (id, key) = divmod(id, pow(10, size))
+            yield f'{key:0{size}}'
+
+    return Path().joinpath(*f())
+
 # Main work function.
 def load_commit_and_push(
     repo: dulwich.repo.Repo,
     cursor: pymysql.cursors.DictCursorMixin,
     web_id: int,
     horizon: Optional[datetime] = None,
+    partition_sizes: list[int] = list(),
+    html_mode: bool = False,
     include_ip: bool = False,
     http_url: str = None,
-    html_mode: bool = False,
 ) -> NoReturn:
     """
     Arguments:
@@ -194,15 +209,18 @@ def load_commit_and_push(
         If given, only consider revisions with prior update time (updated_at).
         This should be about a minute behind current time.
         This helps prevent missing revision updates with identical revision time.
+    * partition_sizes:
+        Partition pages into nested subdirectories.
+        See partition_id.
+    * html_mode:
+        Back up rendered HTML pages instead of sources.
+        Note: do note mix source and html repositories.
     * include_ip:
         Whether to include the author IP in the commit message for each revision.
         Only used in source mode.
     * http_url:
         URL prefix to use for html backup.
         Only used in HTML mode.
-    * html_mode:
-        Back up rendered HTML pages instead of sources.
-        Note: do note mix source and html repositories.
     """
     logger.debug('Resetting index.')
     repo.reset_index()
@@ -240,6 +258,10 @@ where idx.web_id = %s\
         params.append(horizon)
     revisions = query_iterator(cursor, query, params)
 
+    def add_page_file(page_id, filename, content) -> NoReturn:
+        path = Path('pages') / partition_id(partition_sizes, page_id) / str(page_id) / filename
+        git_add_file(repo, path, content)
+
     updated = False
     if not html_mode:
         for revision in revisions:
@@ -251,7 +273,7 @@ where idx.web_id = %s\
                 ('content.md', revision['content']),
                 ('name', revision['name'])
             ]:
-                git_add_file(repo, Path('pages') / str(revision['page_id']) / filename, content)
+                add_page_file(revision['page_id'], filename, content)
 
             def commit_values():
                 yield from commit_values_position_encode(revision_position(revision))
@@ -278,7 +300,7 @@ where idx.web_id = %s\
                     ('revision_id', str(revision['id'])),
                     ('name', revision['name']),
                 ]:
-                    git_add_file(repo, Path('pages') / str(page_id) / filename, content)
+                    add_page_file(page_id, filename, content)
 
             def commit_values():
                 yield from commit_values_position_encode(revision_position(last_revision))
@@ -297,10 +319,25 @@ def cli() -> NoReturn:
         add_help = False,
     )
     parser.add_argument('--repo', type = Path, metavar = 'DIR', default = Path(), help = '''
+Path to a git repository that source revisions or HTML renderings should be comitted to.
+This repository must be on a branch with a default push remote set up.
+For an initial run, the current commit must have message starting with 'initial commit' (up to capitalization).
 Defaults to working directory.
 ''')
     parser.add_argument('--web-id', type = int, metavar = 'ID', required = True, help = 'ID of the web to back up.')
     parser.add_argument('--html', action = 'store_true', help = 'Back up HTML instead of source.')
+    parser.add_argument(
+        '--partition-sizes',
+        nargs = '*',
+        metavar = 'NUM_DIGITS',
+        type = int,
+        choices = range(1, 5),
+        default = [],
+        help = '''
+Partition pages into nested subdirectories.
+The given sizes define how many digits to use at each level, starting with the least significant.
+Example: --partition 2 3 stores page 4567 at pages/67/045/4567.
+''')
 
     g = parser.add_argument_group(title = 'source backup options')
     parser.add_argument('--include-ip', action = 'store_true', help = '''
@@ -356,6 +393,7 @@ Print informational (specify once) or debug (specify twice) messages on stderr.
     logger.debug(f'Horizon: {horizon}')
 
     logger.info('Reading repository.')
+    logger.debug(f'Repository path: {args.repo}')
     repo = dulwich.repo.Repo(args.repo)
 
     logger.info('Connecting to database.')
@@ -377,7 +415,8 @@ Print informational (specify once) or debug (specify twice) messages on stderr.
         cursor,
         args.web_id,
         horizon = horizon,
-        include_ip = args.include_ip,
+        partition_sizes = args.partition_sizes,
         http_url = args.http_url,
+        include_ip = args.include_ip,
         html_mode = args.html
     )
