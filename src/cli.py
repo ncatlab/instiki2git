@@ -204,6 +204,9 @@ def load_commit_and_push(
         Back up rendered HTML pages instead of sources.
         Note: do note mix source and html repositories.
     """
+    logger.debug('Resetting index.')
+    repo.reset_index()
+
     pos = get_current_position(repo)
     logger.info(f'Current revision position: {pos}.')
 
