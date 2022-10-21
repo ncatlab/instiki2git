@@ -18,14 +18,13 @@ from instiki2git.percent_code import PercentCode
 
 logger = logging.getLogger(__name__)
 
-def get_db_conn(host, user, password, database):
-  return pymysql.connect(host=host,
-                         user=user,
-                         password=password,
-                         database=database,
-                         cursorclass=pymysql.cursors.SSDictCursor,
-                         charset='utf8',
-                         use_unicode=True)
+def get_db_conn(**kwargs):
+  return pymysql.connect(
+    **kwargs,
+    cursorclass=pymysql.cursors.SSDictCursor,
+    charset = 'utf8',
+    use_unicode = True,
+  )
 
 def query_iterator(cursor, query: str, params: Iterable[Any] = None):
   logger.debug(f'Query: {query}')
@@ -307,6 +306,8 @@ def setup_logging(verbose):
   default=os.path.expanduser("~/.instiki2git"),
   help="Path to configuration file.")
 @click.option('-h', '--host', type = str)
+@click.option('-p', '--port', type = int)
+@click.option('-S', '--unix_socket', type = str)
 @click.option('-u', '--user', type = str)
 @click.option('-p', '--password', type = str)
 @click.option('-d', '--database', type = str, required = True)
@@ -314,7 +315,7 @@ def setup_logging(verbose):
 @click.option('--safety-interval', type = int, default = 300, show_default = True)
 @click.option('--include-ip', is_flag = True)
 @click.option('-v', '--verbose', count = True)
-def cli(config_file, host, user, password, database, web_id, safety_interval, include_ip, verbose):
+def cli(config_file, host, port, unix_socket, user, password, database, web_id, safety_interval, include_ip, verbose):
   setup_logging(verbose)
   logger.debug(f'Host: {host}')
   logger.debug(f'User: {user}')
@@ -332,7 +333,14 @@ def cli(config_file, host, user, password, database, web_id, safety_interval, in
   repo = dulwich.repo.Repo(repo_path)
 
   logger.info('Connecting to database.')
-  connection = get_db_conn(host = host, user = user, password = password, database = database)
+  connection = get_db_conn(
+    host = host,
+    port = port,
+    unix_socket = unix_socket,
+    user = user,
+    password = password,
+    database = database
+  )
 
   with connection.cursor() as cursor:
     load_and_commit_new_revisions(
@@ -352,6 +360,8 @@ def cli(config_file, host, user, password, database, web_id, safety_interval, in
   default=Path('~/.instiki2git').expanduser(),
   help="Path to configuration file.")
 @click.option('-h', '--host', type = str)
+@click.option('-p', '--port', type = int)
+@click.option('-S', '--unix-socket', type = str)
 @click.option('-u', '--user', type = str)
 @click.option('-p', '--password', type = str)
 @click.option('-d', '--database', type = str, required = True)
@@ -365,7 +375,7 @@ def cli(config_file, host, user, password, database, web_id, safety_interval, in
   default=False,
   help="Run in populate mode")
 @click.option('-v', '--verbose', count = True)
-def cli_html(config_file, host, user, password, database, web_id, latest_download_file, populate, verbose):
+def cli_html(config_file, host, port, unix_socket, user, password, database, web_id, latest_download_file, populate, verbose):
   setup_logging(verbose)
 
   config = read_config(config_file)
@@ -373,6 +383,8 @@ def cli_html(config_file, host, user, password, database, web_id, latest_downloa
   html_repo_path = os.path.abspath(config["html_repo_path"])
   db_config = {
     'host': host,
+    'port': port,
+    'unix_socket': unix_socket,
     'user': user,
     'password': password,
     'database': database,
