@@ -5,7 +5,7 @@ import configparser
 import pymysql.cursors
 import dulwich.repo
 import dulwich.porcelain
-import click
+import argparse
 import requests
 import re
 from pathlib import Path
@@ -34,48 +34,21 @@ def query_iterator(cursor: pymysql.cursors.Cursor, query: str, params: Iterable[
   cursor.execute(query, params)
   return iter(cursor)
 
-def load_new_revisions_by_time(db_config, web_id, latest_revision_time=None):
+def load_new_revisions_by_time(cursor, web_id, latest_revision_time=None):
   """
   Load all revisions, using the given database configuration to connect.  If a
   `latest_revision_time` is provided, only loads revisions committed after that.
   """
-  db_conn = get_db_conn(**db_config)
-  try:
-    with db_conn.cursor() as cursor:
-      date_selector = ""
-      if latest_revision_time:
-        time = latest_revision_time.strftime('%Y-%m-%d %H:%M:%S')
-        date_selector = " AND r.updated_at >= '%s'" % time
-      query = ("SELECT r.id,r.page_id,r.author,r.ip,r.revised_at,r.content,p.name"
-        " FROM revisions r INNER JOIN pages p ON (r.page_id=p.id)"
-        " WHERE r.web_id=%s%s"
-        " ORDER BY r.id") % (web_id, date_selector)
-      cursor.execute(query)
-      revisions = cursor.fetchall()
-  finally:
-    db_conn.close()
-  return revisions
-
-def load_revisions_between(db_config, web_id, start_after, stop_at):
-  """
-  Load all revisions newer than the given time `start_after` and older than or
-  equal to `stop_at`, using the given database configuration to connect.
-  `start_after` and `stop_at` have to be in the format '%Y-%m-%d %H:%M:%S'.
-  """
-  db_conn = get_db_conn(**db_config)
-  try:
-    with db_conn.cursor() as cursor:
-      query = ("SELECT r.id,r.page_id,r.author,r.ip,r.revised_at,r.content,p.name"
-        " FROM revisions r INNER JOIN pages p ON (r.page_id=p.id)"
-        " WHERE r.web_id=%s"
-        " AND r.updated_at>'%s'"
-        " AND r.updated_at<='%s'"
-        " ORDER BY r.id") % (web_id, start_after, stop_at)
-      cursor.execute(query)
-      revisions = cursor.fetchall()
-  finally:
-    db_conn.close()
-  return revisions
+  date_selector = ""
+  if latest_revision_time:
+    time = latest_revision_time.strftime('%Y-%m-%d %H:%M:%S')
+    date_selector = " AND r.updated_at >= '%s'" % time
+  query = ("SELECT r.id,r.page_id,r.author,r.ip,r.revised_at,r.content,p.name"
+    " FROM revisions r INNER JOIN pages p ON (r.page_id=p.id)"
+    " WHERE r.web_id=%s%s"
+    " ORDER BY r.id") % (web_id, date_selector)
+  cursor.execute(query)
+  return cursor.fetchall()
 
 # Used by the following two functions.
 commit_data_key_code = PercentCode(reserved = map(ord, ['\0', '\n', ':']))
@@ -267,11 +240,11 @@ def html_repo_populate(repo_path, html_repo_path, web_http_url,
   html_repo.do_commit("Added current html versions.",
     "instiki2git <>")
 
-def html_repo_update(html_repo_path, db_config, web_id, web_http_url,
+def html_repo_update(html_repo_path, cursor, web_id, web_http_url,
   latest_download_file):
   latest_download_time = read_latest_download_file(latest_download_file)
   write_latest_download_file(latest_download_file)
-  revs = load_new_revisions_by_time(db_config, web_id, latest_download_time)
+  revs = load_new_revisions_by_time(cursor, web_id, latest_download_time)
   pages_list = {r["page_id"] for r in revs}
   if pages_list:
     html_repo = dulwich.repo.Repo(html_repo_path)
@@ -282,95 +255,99 @@ def html_repo_update(html_repo_path, db_config, web_id, web_http_url,
 
 # end html repository functions
 
-def setup_logging(verbose):
+
+def cli():
+  parser = argparse.ArgumentParser(
+    description = 'A tool for exporting an Instiki installation to a git repository.',
+    add_help = False,
+  )
+  parser.add_argument('--web-id', type = int, metavar = 'ID', required = True, help = 'ID of the web to back up')
+  parser.add_argument('--html', action = 'store_true', help = 'back up html instead of source')
+  parser.add_argument('--include-ip', action = 'store_true', help = 'include author IP in commit message for revisions')
+
+  g = parser.add_argument_group(title = 'HTML backup options')
+  g.add_argument('--populate', action = 'store_true', help = '''
+Populate HTML repository instead of updating it.
+This uses the source repository.
+''')
+  g.add_argument('--repo-html', type = Path, metavar = 'DIR')
+  g.add_argument('--latest-download-file', metavar = 'FILE', type = Path, help = '''
+File containing the time of the last HTML download.
+''')
+  g.add_argument('--http-url', type = str, metavar = 'URL', help = '''
+URL prefix to use for html backup.
+Example: https://ncatlab.org/nlab
+''')
+
+  g = parser.add_argument_group(title = 'horizon options')
+  g.add_argument('--safety-interval', type = int, metavar = 'SECONDS', default = 300, help = '''
+Only consider revisions older than the given time interval (default: 300s).
+This helps prevent missing revisions that arrive out of order in the database or have identical revision time.
+''')
+  g.add_argument('--horizon', type = int, help = '''
+  Only consider revisions older than the given UTC timestamp.
+  Overrides `--safety-interval`.
+''')
+
+  g = parser.add_argument_group(title = 'repository options')
+  g.add_argument('--repo', type = Path, metavar = 'DIR', required = True, help = 'required')
+  
+  g = parser.add_argument_group(title = 'database connection')
+  g.add_argument('--host', type = str)
+  g.add_argument('--port', type = int)
+  g.add_argument('--unix_socket', type = Path, metavar = 'PATH', help = 'alternative to host and port')
+  g.add_argument('--user', type = str, help = 'not needed when authenticating via Unix domain socket')
+  g.add_argument('--password', type = str)
+  g.add_argument('--database', type = str, required = True, help = 'required')
+
+  g = parser.add_argument_group(title = 'help and debugging')
+  g.add_argument('-h', '--help', action = 'help', help = 'Show this help message and exit.')
+  g.add_argument('-v', '--verbose', action = 'count', default = 0, help = 'Print informational (specify once) or debug  (specify twice) messages on stderr.')
+
+  # Parse arguments.
+  args = parser.parse_args()
+
+  # Configure logging.
   logging.basicConfig()
   logger.setLevel({
     0: logging.WARNING,
     1: logging.INFO,
-  }.get(verbose, logging.DEBUG))
+  }.get(args.verbose, logging.DEBUG))
 
-@click.command()
-@click.option('-h', '--host', type = str)
-@click.option('-p', '--port', type = int)
-@click.option('-S', '--unix_socket', type = str)
-@click.option('-u', '--user', type = str)
-@click.option('-p', '--password', type = str)
-@click.option('-d', '--database', type = str, required = True)
-@click.option('-w', '--web-id', type = int, required = True)
-@click.option('--safety-interval', type = int, default = 300, show_default = True)
-@click.option('--include-ip', is_flag = True)
-@click.option('-v', '--verbose', count = True)
-def cli(config_file, host, port, unix_socket, user, password, database, web_id, safety_interval, include_ip, verbose):
-  setup_logging(verbose)
-  logger.debug(f'Host: {host}')
-  logger.debug(f'User: {user}')
-  # Do not log password.
-  #logger.debug(f'Password': {password}')
-  logger.debug(f'Database: {database}')
-  logger.debug(f'Safety interval (in seconds): {safety_interval}')
-  logger.debug(f'Include IPs: {include_ip}')
-  logger.debug(f'Verbosity level: {verbose}')
+  # Compute horizon.
+  horizon = datetime.utcfromtimestamp(args.horizon) if not args.horizon is None else datetime.now() - timedelta(minutes = args.safety_interval)
+  logger.debug(f'Horizon: {horizon}')
 
   logger.info('Reading repository.')
-  repo = dulwich.repo.Repo(Path())
+  repo = dulwich.repo.Repo(args.repo)
 
   logger.info('Connecting to database.')
-  connection = get_db_conn(
-    host = host,
-    port = port,
-    unix_socket = unix_socket,
-    user = user,
-    password = password,
-    database = database
+  connection = pymysql.connect(
+    host = args.host,
+    port = args.port,
+    unix_socket = args.unix_socket,
+    user = args.user,
+    password = args.password,
+    database = args.database,
+    cursorclass = pymysql.cursors.SSDictCursor,
+    charset = 'utf8',
+    use_unicode = True,
   )
+  cursor = connection.cursor()
 
-  with connection.cursor() as cursor:
+  if not args.html:
     load_and_commit_new_revisions(
       repo,
       cursor,
-      web_id,
-      horizon = datetime.now() - timedelta(minutes = safety_interval),
-      include_ip = include_ip
+      args.web_id,
+      horizon = horizon,
+      include_ip = args.include_ip,
     )
 
-  logger.info('Pushing repository.')
-  dulwich.porcelain.push(repo = repo)
-
-@click.command()
-@click.option('-h', '--host', type = str)
-@click.option('-p', '--port', type = int)
-@click.option('-S', '--unix-socket', type = str)
-@click.option('-u', '--user', type = str)
-@click.option('-p', '--password', type = str)
-@click.option('-d', '--database', type = str, required = True)
-@click.option('-w', '--web-id', type = int, required = True)
-@click.option('-W', '--web-http-url', type = str, required = True)
-@click.option('-r', '--repo-path', type = click.Path(path_type = Path), required = True)
-@click.option("--latest-download-file",
-  type=click.Path(path_type = Path),
-  default=Path('/tmp/instiki2git-html'),
-  help="Path to a file containing the time of the last html download.")
-@click.option("--populate",
-  is_flag=True,
-  default=False,
-  help="Run in populate mode")
-@click.option('-v', '--verbose', count = True)
-def cli_html(config_file, host, port, unix_socket, user, password, database, web_id, web_http_url, latest_download_file, populate, verbose, repo_path):
-  setup_logging(verbose)
-
-  db_config = {
-    'host': host,
-    'port': port,
-    'unix_socket': unix_socket,
-    'user': user,
-    'password': password,
-    'database': database,
-  }
-  if web_http_url.endswith("/"):
-    web_http_url = web_http_url[:-1]
-  if populate:
-    html_repo_populate(repo_path, Path(), web_http_url,
-      latest_download_file)
+    logger.info('Pushing repository.')
+    dulwich.porcelain.push(repo = repo)
   else:
-    html_repo_update(Path(), db_config, web_id, web_http_url,
-      latest_download_file)
+    if args.populate:
+      html_repo_populate(args.repo, args.html_repo, args.http_url, args.latest_download_file)
+    else:
+      html_repo_update(args.html_repo, cursor, args.web_id, args.http_url, args.latest_download_file)
