@@ -1,7 +1,6 @@
 import argparse
 from datetime import datetime, timedelta, timezone
-import dulwich.objects
-import dulwich.repo
+import git
 import logging
 from pathlib import Path
 import pymysql.cursors
@@ -81,13 +80,7 @@ def commit_values_position_decode(values: dict[str, str]) -> Position:
 
 # git functions.
 
-def get_commit(repo: dulwich.repo.Repo, id: bytes) -> dulwich.repo.Commit:
-    obj: dulwich.objects.ShaFile = repo.get_object(id)
-    if not isinstance(obj, dulwich.repo.Commit):
-        raise TypeError('does not refer to a commit: {sha.decode()}')
-    return obj
-
-def git_add_file(repo: dulwich.repo.Repo, path: Path, content: Union[bytes, str]) -> NoReturn:
+def git_add_file(repo: git.Repo, path: Path, content: Union[bytes, str]) -> NoReturn:
     """
     Create a file in the given repository and stage it.
     This creates all needed parent directories.
@@ -97,14 +90,14 @@ def git_add_file(repo: dulwich.repo.Repo, path: Path, content: Union[bytes, str]
     """
     logger.debug(f'Adding file at {path}.')
     for ancestor in reversed(path.parents):
-        (repo.path / ancestor).mkdir(exist_ok = True)
+        (Path(repo.working_dir) / ancestor).mkdir(exist_ok = True)
 
     if isinstance(content, str):
-        (repo.path / path).write_text(content, encoding = 'utf8')
+        (Path(repo.working_dir) / path).write_text(content, encoding = 'utf8')
     else:
-        (repo.path / path).write_bytes(content)
+        (Path(repo.working_dir) / path).write_bytes(content)
 
-    repo.stage(path)
+    repo.git.add(path)
 
 # These are the reserved bytes in git commit authors and committers.
 git_identity_code = PercentCode(reserved = map(ord, ['\0', '\n', '<', '>']))
@@ -116,7 +109,7 @@ def git_identity_with_empty_email(name: bytes) -> bytes:
 git_script_identity: bytes = git_identity_with_empty_email(b'instiki2git')
 
 def git_commit(
-    repo: dulwich.repo.Repo,
+    repo: git.Repo,
     commit_values: Iterable[Tuple[str, str]],
     author: str = None,
     author_time: datetime = None,
@@ -127,22 +120,24 @@ def git_commit(
     An optional author (without email) can be given.
     """
     logger.debug('Committing.')
-    repo.do_commit(
-        message = commit_message_encode(dict(commit_values)),
-        committer = git_script_identity,
-        author = None if author is None else git_identity_with_empty_email(
-            git_identity_code.encode(author.encode('utf8'))
-        ),
-        author_timestamp = None if author_time is None else author_time.timestamp(),
+    repo.git.commit(
+        '--allow-empty',
+        '-m',
+        commit_message_encode(dict(commit_values)).decode('utf8'),
+        #committer = git_script_identity,
+        #author = None if author is None else git_identity_with_empty_email(
+        #    git_identity_code.encode(author.encode('utf8'))
+        #),
+        #author_timestamp = None if author_time is None else author_time.timestamp(),
     )
 
-def get_current_position(repo: dulwich.repo.Repo) -> Optional[Position]:
+def get_current_position(repo: git.Repo) -> Optional[Position]:
     """
     Return the tuple of (updated_at, id) for the revision encoded by the head commit.
     Returns None if there is no head (e.g. if the repository is empty).
     """
-    commit: dulwich.repo.Commit = repo.get_object(repo.head())
-    if commit.message.lower().startswith(b'initial commit'):
+    commit: git.Commit = repo.commit(repo.head)
+    if commit.message.lower().startswith('initial commit'):
         return None
 
     commit_values: dict[str, str] = commit_message_decode(commit.message)
@@ -187,7 +182,7 @@ def partition_id(sizes: Iterable[int], id) -> list[Path]:
 
 # Main work function.
 def load_commit_and_push(
-    repo: dulwich.repo.Repo,
+    repo: git.Repo,
     cursor: pymysql.cursors.DictCursorMixin,
     web_id: int,
     horizon: Optional[datetime] = None,
@@ -223,7 +218,7 @@ def load_commit_and_push(
         Only used in HTML mode.
     """
     logger.debug('Resetting index.')
-    repo.reset_index()
+    repo.git.reset('--hard')
 
     pos = get_current_position(repo)
     logger.info(f'Current revision position: {pos}.')
@@ -310,7 +305,7 @@ where idx.web_id = %s\
 
     if updated:
         logger.info('Pushing repository.')
-        dulwich.porcelain.push(repo = repo)
+        repo.git.push()
 
 # Command-line interface.
 def cli() -> NoReturn:
@@ -394,7 +389,7 @@ Print informational (specify once) or debug (specify twice) messages on stderr.
 
     logger.info('Reading repository.')
     logger.debug(f'Repository path: {args.repo}')
-    repo = dulwich.repo.Repo(args.repo)
+    repo = git.Repo(args.repo)
 
     logger.info('Connecting to database.')
     connection: pymysql.Connection = pymysql.connect(
