@@ -2,16 +2,31 @@ import argparse
 from datetime import datetime, timedelta, timezone
 import dulwich.objects
 import dulwich.repo
+import itertools
 import logging
 from pathlib import Path
 import pymysql.cursors
 import requests
-from typing import Any, Iterable, NoReturn, Optional, Tuple
+from typing import Any, Iterable, NoReturn, Optional, Tuple, TypeVar
 
 from instiki2git.percent_code import PercentCode
 import instiki2git.git_tools as git
 
 logger: logging.Logger = logging.getLogger(__name__)
+
+# General helper functions.
+
+T = TypeVar('T')
+def iter_inhabited(it: Iterable[T]) -> (bool, Iterable[T]):
+    """
+    Test whether an iterable is inhabited.
+    Since this modifies the original iterable, a replacement iterable is returned.
+    """
+    try:
+        x = next(it)
+    except StopIteration:
+        return (False, tuple())
+    return (True, itertools.chain((x,), it))
 
 # Database queries.
 
@@ -93,6 +108,7 @@ def git_commit(
     """
     Perform a commit.
     The message is formed by encoding the given commit values.
+    Entries are iterated over before the commit values.
     An optional author (without email) can be given.
     """
     commit_prev: dulwich.repo.Commit = git.get_commit(repo, repo.head())
@@ -211,41 +227,64 @@ def load_commit_and_push(
     time_before_query = datetime.now(timezone.utc)
     logger.debug(f'Time before query: {time_before_query}.')
 
+    if html_mode:
+        web_address = get_web_address(cursor, web_id)
+        logger.debug(f'Web address: {web_address}')
+
     horizon_msg = f'before {horizon} ' if horizon else ''
     logger.info(f'Loading revisions {horizon_msg}from database.')
 
-    if not html_mode:
-        fields = 'r.*, p.*'
-    else:
-        # Exclude r.content.
-        # Not needed and main source of space consumption.
-        fields = 'r.id, r.updated_at, r.page_id, p.*'
+    constraints = []
+    params = []
 
-    # SQL printing, so sad.
-    query = f'''\
-select {fields} \
+    constraints.append('idx.web_id = %s')
+    params.append(web_id)
+
+    if pos:
+        constraints.append('(idx.updated_at, idx.id) > (%s, %s)')
+        params.extend(pos)
+
+    if horizon:
+        constraints.append('idx.updated_at < %s')
+        params.append(horizon)
+
+    constraint_str = 'where ' + ' and '.join(constraints)
+    order_str = 'order by idx.updated_at, idx.id'
+
+    if not html_mode:
+        query = f'''\
+select r.*, p.* \
 from revisions idx force index(index_revisions_on_web_id_and_updated_at_and_id_and_page_id) \
 join revisions r on r.id = idx.id \
 join pages p on p.id = idx.page_id \
-where idx.web_id = %s\
+{constraint_str} \
+{order_str}\
 '''
-    params = [web_id]
-    if pos:
-        query += ' and (idx.updated_at, idx.id) > (%s, %s)'
-        params.extend(pos)
-    if horizon:
-        query += ' and idx.updated_at < %s'
-        params.append(horizon)
-    query += ' order by idx.updated_at, idx.id'
+    else:
+        inner_query = f'''\
+select id, updated_at, page_id, row_number() over (partition by page_id order by updated_at, id) rank \
+from revisions idx force index(index_revisions_on_web_id_and_updated_at_and_id_and_page_id) \
+{constraint_str}\
+'''
+        query = f'''\
+select idx.id, idx.updated_at, idx.page_id, p.name \
+from ({inner_query}) idx \
+inner join pages p on p.id = idx.page_id \
+where idx.rank = 1 \
+{order_str}\
+'''
     revisions = query_iterator(cursor, query, params)
 
     def git_path(page_id) -> list[bytes]:
         return git.path(Path('pages') / partition_id(partition_sizes, page_id) / str(page_id))
 
-    updated = False
+    (updated, revisions) = iter_inhabited(revisions)
+    if not updated:
+        logger.info('No new revisions found.')
+        return
+
     if not html_mode:
         for revision in revisions:
-            updated = True
             id = revision['id']
             logger.info(f'Committing revision {id}.')
 
@@ -268,39 +307,38 @@ where idx.web_id = %s\
                 author_time = revision_datetime(revision, 'revised_at'),
             )
     else:
-        to_update = dict()
-        last_revision = None
-        for revision in revisions:
-            to_update[revision['page_id']] = revision
-            last_revision = revision
+        session = requests.Session()
+        address_base = f'{http_url}/{web_address}/show_by_id/'
+        num_entries = 0
 
-        if last_revision:
-            updated = True
-            session = requests.Session()
-            address_base = http_url + '/' + get_web_address(web_id) + '/show_by_id/'
+        def entries():
+            nonlocal revision, num_entries
+            for revision in revisions:
+                num_entries += 1
+                page_id = revision['page_id']
+                logger.info(f'Updating HTML for page {page_id}')
+                logger.debug(f'Revision {revision["id"]}, updated at {revision["updated_at"]}.')
 
-            def entries():
-                for (page_id, revision) in to_update.items():
-                    logger.info(f'Updating HTML for page {page_id}')
-                    tree = git.add_flat_tree(repo, [
-                        (b'content.html', download_page(session, address_base + page_id)),
-                        (b'revision_id', str(revision['id']).encode('utf8')),
-                        (b'name', revision['name'].encode('utf8')),
-                    ])
-                    yield (git_path(page_id, tree))
+                tree = git.add_flat_tree(repo, [
+                    (b'content.html', download_page(session, address_base + str(page_id))),
+                    (b'revision_id', str(revision['id']).encode('utf8')),
+                    (b'name', revision['name'].encode('utf8')),
+                ])
+                yield (git_path(page_id), tree)
 
-            def commit_values():
-                yield from commit_values_position_encode(revision_position(last_revision))
-                yield ('Comment', f'updated {len(to_update)} pages')
+        # Iterated over after entries.
+        def commit_values():
+            yield from commit_values_position_encode(revision_position(revision))
+            yield ('Comment', f'updated {num_entries} pages')
 
-            git_commit(
-                repo = repo,
-                entries = entries(),
-                commit_values = commit_values(),
-                author_time = time_before_query,
-            )
+        git_commit(
+            repo = repo,
+            entries = entries(),
+            commit_values = commit_values(),
+            author_time = time_before_query,
+        )
 
-    if updated and push:
+    if push:
         logger.info('Pushing repository.')
         dulwich.porcelain.push(repo = repo)
 
@@ -337,7 +375,7 @@ For this to work, the current branch must have a default push remote set up.
     g = parser.add_argument_group(title = 'source backup options')
     parser.add_argument('--include-ip', action = 'store_true', help = '''
 Include author IP in the commit message for each revision.
-''')
+g''')
 
     g = parser.add_argument_group(title = 'HTML backup options')
     g.add_argument('--http-url', type = str, metavar = 'URL', default = 'http://localhost', help = '''
