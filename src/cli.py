@@ -6,10 +6,10 @@ import logging
 from pathlib import Path
 import pymysql.cursors
 import requests
-from typing import Any, Iterable, NoReturn, Optional, Tuple, Union
+from typing import Any, Iterable, NoReturn, Optional, Tuple
 
 from instiki2git.percent_code import PercentCode
-
+import instiki2git.git_tools as git
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -81,42 +81,11 @@ def commit_values_position_decode(values: dict[str, str]) -> Position:
 
 # git functions.
 
-def get_commit(repo: dulwich.repo.Repo, id: bytes) -> dulwich.repo.Commit:
-    obj: dulwich.objects.ShaFile = repo.get_object(id)
-    if not isinstance(obj, dulwich.repo.Commit):
-        raise TypeError('does not refer to a commit: {sha.decode()}')
-    return obj
-
-def git_add_file(repo: dulwich.repo.Repo, path: Path, content: Union[bytes, str]) -> NoReturn:
-    """
-    Create a file in the given repository and stage it.
-    This creates all needed parent directories.
-
-    The given path must be relative and not contain any segments '.' or '..'.
-    It is interpreted relative to the repository path.
-    """
-    logger.debug(f'Adding file at {path}.')
-    for ancestor in reversed(path.parents):
-        (repo.path / ancestor).mkdir(exist_ok = True)
-
-    if isinstance(content, str):
-        (repo.path / path).write_text(content, encoding = 'utf8')
-    else:
-        (repo.path / path).write_bytes(content)
-
-    repo.stage(path)
-
-# These are the reserved bytes in git commit authors and committers.
-git_identity_code = PercentCode(reserved = map(ord, ['\0', '\n', '<', '>']))
-
-def git_identity_with_empty_email(name: bytes) -> bytes:
-    """Format a git user identity without an email address."""
-    return name + b' <>'
-
-git_script_identity: bytes = git_identity_with_empty_email(b'instiki2git')
+git_script_identity: bytes = git.identity_with_empty_email(b'instiki2git')
 
 def git_commit(
     repo: dulwich.repo.Repo,
+    entries: Iterable[Tuple[list[bytes], dulwich.objects.ShaFile]],
     commit_values: Iterable[Tuple[str, str]],
     author: str = None,
     author_time: datetime = None,
@@ -126,12 +95,21 @@ def git_commit(
     The message is formed by encoding the given commit values.
     An optional author (without email) can be given.
     """
+    commit_prev: dulwich.repo.Commit = git.get_commit(repo, repo.head())
+    logger.debug(f'Previous commit: {commit_prev.id}')
+
+    logger.debug('Creating tree.')
+    tree = repo.get_object(commit_prev.tree)
+    for (path, obj) in entries:
+        tree = git.tree_replace_nested(repo, tree, path, obj)
+
     logger.debug('Committing.')
     repo.do_commit(
+        tree = tree.id,
         message = commit_message_encode(dict(commit_values)),
         committer = git_script_identity,
-        author = None if author is None else git_identity_with_empty_email(
-            git_identity_code.encode(author.encode('utf8'))
+        author = None if author is None else git.identity_with_empty_email(
+            git.identity_code.encode(author.encode('utf8'))
         ),
         author_timestamp = None if author_time is None else author_time.timestamp(),
     )
@@ -141,7 +119,7 @@ def get_current_position(repo: dulwich.repo.Repo) -> Optional[Position]:
     Return the tuple of (updated_at, id) for the revision encoded by the head commit.
     Returns None if the head commit is the initial commit.
     """
-    commit: dulwich.repo.Commit = repo.get_object(repo.head())
+    commit = git.get_commit(repo, repo.head())
     if commit.message.lower().startswith(b'initial commit'):
         return None
 
@@ -201,6 +179,7 @@ def load_commit_and_push(
     * repo:
         The repository to modify.
         Commits are made to the current branch.
+        The index and working directory are not modified.
     * web_id: the id of the web from which to load revisions.
     * cursor:
         The database connection cursor.
@@ -222,9 +201,6 @@ def load_commit_and_push(
         URL prefix to use for html backup.
         Only used in HTML mode.
     """
-    logger.debug('Resetting index.')
-    repo.reset_index()
-
     pos = get_current_position(repo)
     logger.info(f'Current revision position: {pos}.')
 
@@ -259,9 +235,8 @@ where idx.web_id = %s\
     query += ' order by idx.updated_at, idx.id'
     revisions = query_iterator(cursor, query, params)
 
-    def add_page_file(page_id, filename, content) -> NoReturn:
-        path = Path('pages') / partition_id(partition_sizes, page_id) / str(page_id) / filename
-        git_add_file(repo, path, content)
+    def git_path(page_id) -> list[bytes]:
+        return git.path(Path('pages') / partition_id(partition_sizes, page_id) / str(page_id))
 
     updated = False
     if not html_mode:
@@ -270,11 +245,10 @@ where idx.web_id = %s\
             id = revision['id']
             logger.info(f'Committing revision {id}.')
 
-            for (filename, content) in [
-                ('content.md', revision['content']),
-                ('name', revision['name'])
-            ]:
-                add_page_file(revision['page_id'], filename, content)
+            tree = git.add_flat_tree(repo, [
+                (b'content.md', revision['content'].encode('utf8')),
+                (b'name', revision['name'].encode('utf8'))
+            ])
 
             def commit_values():
                 yield from commit_values_position_encode(revision_position(revision))
@@ -282,7 +256,13 @@ where idx.web_id = %s\
                 if include_ip:
                     yield ('IP address', revision['ip'])
 
-            git_commit(repo, commit_values(), revision['author'], revision_datetime(revision, 'revised_at'))
+            git_commit(
+                repo = repo,
+                entries = [(git_path(revision['page_id']), tree)],
+                commit_values = commit_values(),
+                author = revision['author'],
+                author_time = revision_datetime(revision, 'revised_at'),
+            )
     else:
         to_update = dict()
         last_revision = None
@@ -294,24 +274,31 @@ where idx.web_id = %s\
             updated = True
             session = requests.Session()
             address_base = http_url + '/' + get_web_address(web_id) + '/show_by_id/'
-            for (page_id, revision) in to_update.items():
-                logger.info(f'Updating HTML for page {page_id}')
-                for (filename, content) in [
-                    ('content.html', download_page(session, address_base + page_id)),
-                    ('revision_id', str(revision['id'])),
-                    ('name', revision['name']),
-                ]:
-                    add_page_file(page_id, filename, content)
+
+            def entries():
+                for (page_id, revision) in to_update.items():
+                    logger.info(f'Updating HTML for page {page_id}')
+                    tree = git.add_flat_tree(repo, [
+                        (b'content.html', download_page(session, address_base + page_id)),
+                        (b'revision_id', str(revision['id']).encode('utf8')),
+                        (b'name', revision['name'].encode('utf8')),
+                    ])
+                    yield (git_path(page_id, tree))
 
             def commit_values():
                 yield from commit_values_position_encode(revision_position(last_revision))
                 yield ('Comment', f'updated {len(to_update)} pages')
 
-            git_commit(repo, commit_values(), time_before_query)
+            git_commit(
+                repo = repo,
+                entries = entries(),
+                commit_values = commit_values(),
+                author_time = time_before_query,
+            )
 
     if updated:
         logger.info('Pushing repository.')
-        dulwich.porcelain.push(repo = repo)
+        #dulwich.porcelain.push(repo = repo)
 
 # Command-line interface.
 def cli() -> NoReturn:
