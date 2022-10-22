@@ -307,7 +307,7 @@ def cli() -> NoReturn:
         add_help = False,
     )
     parser.add_argument('--repo', type = Path, metavar = 'DIR', default = Path(), help = '''
-Path to a git repository that source revisions or HTML renderings should be comitted to.
+Path to a git repository (may be bare) that source revisions or HTML renderings should be comitted to.
 This repository must be on a branch with a default push remote set up.
 For an initial run, the current commit must have message starting with 'initial commit' (up to capitalization).
 Defaults to working directory.
@@ -382,7 +382,7 @@ Print informational (specify once) or debug (specify twice) messages on stderr.
 
     logger.info('Reading repository.')
     logger.debug(f'Repository path: {args.repo}')
-    repo = dulwich.repo.Repo(args.repo)
+    repo = dulwich.repo.Repo(str(args.repo))
 
     logger.info('Connecting to database.')
     connection: pymysql.Connection = pymysql.connect(
