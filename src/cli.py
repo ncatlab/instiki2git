@@ -170,6 +170,7 @@ def load_commit_and_push(
     web_id: int,
     horizon: Optional[datetime] = None,
     partition_sizes: list[int] = list(),
+    push: bool = False,
     html_mode: bool = False,
     include_ip: bool = False,
     http_url: str = None,
@@ -191,6 +192,9 @@ def load_commit_and_push(
     * partition_sizes:
         Partition pages into nested subdirectories.
         See partition_id.
+    * push:
+        If set, push after finishing comitting.
+        This requires the current branch to have a default push target set up.
     * html_mode:
         Back up rendered HTML pages instead of sources.
         Note: do note mix source and html repositories.
@@ -296,9 +300,9 @@ where idx.web_id = %s\
                 author_time = time_before_query,
             )
 
-    if updated:
+    if updated and push:
         logger.info('Pushing repository.')
-        #dulwich.porcelain.push(repo = repo)
+        dulwich.porcelain.push(repo = repo)
 
 # Command-line interface.
 def cli() -> NoReturn:
@@ -308,12 +312,10 @@ def cli() -> NoReturn:
     )
     parser.add_argument('--repo', type = Path, metavar = 'DIR', default = Path(), help = '''
 Path to a git repository (may be bare) that source revisions or HTML renderings should be comitted to.
-This repository must be on a branch with a default push remote set up.
 For an initial run, the current commit must have message starting with 'initial commit' (up to capitalization).
 Defaults to working directory.
 ''')
     parser.add_argument('--web-id', type = int, metavar = 'ID', required = True, help = 'ID of the web to back up.')
-    parser.add_argument('--html', action = 'store_true', help = 'Back up HTML instead of source.')
     parser.add_argument(
         '--partition-sizes',
         nargs = '*',
@@ -326,6 +328,11 @@ Partition pages into nested subdirectories.
 The given sizes define how many digits to use at each level, starting with the least significant.
 Example: --partition 2 3 stores page 4567 at pages/67/045/4567.
 ''')
+    parser.add_argument('--push', action = 'store_true', help = '''
+Push after finishing comitting.
+For this to work, the current branch must have a default push remote set up.
+''')
+    parser.add_argument('--html', action = 'store_true', help = 'Back up HTML instead of source.')
 
     g = parser.add_argument_group(title = 'source backup options')
     parser.add_argument('--include-ip', action = 'store_true', help = '''
@@ -404,6 +411,7 @@ Print informational (specify once) or debug (specify twice) messages on stderr.
         args.web_id,
         horizon = horizon,
         partition_sizes = args.partition_sizes,
+        push = args.push,
         http_url = args.http_url,
         include_ip = args.include_ip,
         html_mode = args.html
