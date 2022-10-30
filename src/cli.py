@@ -2,31 +2,17 @@ import argparse
 from datetime import datetime, timedelta, timezone
 import dulwich.objects
 import dulwich.repo
-import itertools
 import logging
 from pathlib import Path
-import pymysql.cursors
+import pymysql
 import requests
-from typing import Any, Iterable, NoReturn, Optional, Tuple, TypeVar
+from typing import Any, Iterable, NoReturn, Optional, Tuple
 
 from instiki2git.percent_code import PercentCode
+from instiki2git.general import iter_inhabited
 import instiki2git.git_tools as git
 
 logger: logging.Logger = logging.getLogger(__name__)
-
-# General helper functions.
-
-T = TypeVar('T')
-def iter_inhabited(it: Iterable[T]) -> (bool, Iterable[T]):
-    """
-    Test whether an iterable is inhabited.
-    Since this modifies the original iterable, a replacement iterable is returned.
-    """
-    try:
-        x = next(it)
-    except StopIteration:
-        return (False, tuple())
-    return (True, itertools.chain((x,), it))
 
 # Database queries.
 
@@ -224,9 +210,6 @@ def load_commit_and_push(
     pos = get_current_position(repo)
     logger.info(f'Current revision position: {pos}.')
 
-    time_before_query = datetime.now(timezone.utc)
-    logger.debug(f'Time before query: {time_before_query}.')
-
     if html_mode:
         web_address = get_web_address(cursor, web_id)
         logger.debug(f'Web address: {web_address}')
@@ -234,6 +217,7 @@ def load_commit_and_push(
     horizon_msg = f'before {horizon} ' if horizon else ''
     logger.info(f'Loading revisions {horizon_msg}from database.')
 
+    # SQL query printing (so sad).
     constraints = []
     params = []
 
@@ -248,40 +232,34 @@ def load_commit_and_push(
         constraints.append('idx.updated_at < %s')
         params.append(horizon)
 
+    from_revisions_idx = 'from revisions idx force index(index_revisions_on_web_id_and_updated_at_and_id_and_page_id)'
+    join_revisions_r = 'join revisions r on r.id = idx.id'
+    join_pages = 'join pages p on p.id = idx.page_id'
     constraint_str = 'where ' + ' and '.join(constraints)
     order_str = 'order by idx.updated_at, idx.id'
 
     if not html_mode:
-        query = f'''\
-select r.*, p.* \
-from revisions idx force index(index_revisions_on_web_id_and_updated_at_and_id_and_page_id) \
-join revisions r on r.id = idx.id \
-join pages p on p.id = idx.page_id \
-{constraint_str} \
-{order_str}\
-'''
+        select = 'select r.*, p.*'
+        query = f'{select} {from_revisions_idx} {join_revisions_r} {join_pages} {constraint_str} {order_str}'
     else:
-        inner_query = f'''\
-select id, updated_at, page_id, row_number() over (partition by page_id order by updated_at, id) rank \
-from revisions idx force index(index_revisions_on_web_id_and_updated_at_and_id_and_page_id) \
-{constraint_str}\
-'''
-        query = f'''\
-select idx.id, idx.updated_at, idx.page_id, p.name \
-from ({inner_query}) idx \
-inner join pages p on p.id = idx.page_id \
-where idx.rank = 1 \
-{order_str}\
-'''
+        select = 'select idx.id, idx.updated_at, idx.page_id, p.name'
+        query = f'{select} {from_revisions_idx} {join_pages} {constraint_str} {order_str}'
+
+    time_before_query = datetime.now(timezone.utc)
+    logger.debug(f'Time before query: {time_before_query}.')
+
     revisions = query_iterator(cursor, query, params)
-
-    def git_path(page_id) -> list[bytes]:
-        return git.path(Path('pages') / partition_id(partition_sizes, page_id) / str(page_id))
-
     (updated, revisions) = iter_inhabited(revisions)
     if not updated:
         logger.info('No new revisions found.')
         return
+
+    time_after_first_result = datetime.now(timezone.utc)
+    time_delta = time_after_first_result - time_before_query
+    logger.info(f'Time until first query result: {time_delta / timedelta(microseconds = 1000)} ms')
+
+    def git_path(page_id) -> list[bytes]:
+        return git.path(Path('pages') / partition_id(partition_sizes, page_id) / str(page_id))
 
     if not html_mode:
         for revision in revisions:
@@ -307,15 +285,13 @@ where idx.rank = 1 \
                 author_time = revision_datetime(revision, 'revised_at'),
             )
     else:
+        to_update = {revision['page_id']: revision for revision in revisions}
         session = requests.Session()
         address_base = f'{http_url}/{web_address}/show_by_id/'
-        num_entries = 0
 
         def entries():
-            nonlocal revision, num_entries
-            for revision in revisions:
-                num_entries += 1
-                page_id = revision['page_id']
+            nonlocal revision
+            for (page_id, revision) in to_update.items():
                 logger.info(f'Updating HTML for page {page_id}')
                 logger.debug(f'Revision {revision["id"]}, updated at {revision["updated_at"]}.')
 
@@ -329,7 +305,7 @@ where idx.rank = 1 \
         # Iterated over after entries.
         def commit_values():
             yield from commit_values_position_encode(revision_position(revision))
-            yield ('Comment', f'updated {num_entries} pages')
+            yield ('Comment', f'updated {len(to_update)} pages')
 
         git_commit(
             repo = repo,
