@@ -9,25 +9,17 @@ class PercentCode:
 
     def decode_iterable(self, jt: Iterable[int]) -> Iterable[int]:
         jt = iter(jt)
-        while True:
-            try:
-                b = next(jt)
-            except StopIteration:
-                return
+        for b in jt:
             if b == self.special:
-                c1 = next(jt) - 0x30
-                c0 = next(jt) - 0x30
-                yield 0x10 * c1 + c0
+                yield int(bytes(next(jt) for _ in range(2)), 16)
             else:
                 yield b
 
     def encode_iterable(self, it: Iterable[int]) -> Iterable[int]:
         for x in it:
             if x in self.to_encode:
-                (c1, c0) = divmod(x, 16)
                 yield self.special
-                yield c1 + 0x30
-                yield c0 + 0x30
+                yield from f'{x:02x}'.encode()
             else:
                 yield x
 
