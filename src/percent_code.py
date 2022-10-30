@@ -3,7 +3,7 @@ from collections.abc import Iterable
 class PercentCode:
     '''Percent coding operating on bytes.'''
 
-    def __init__(self, *, special : int = ord('%'), reserved: Iterable[int] = []):
+    def __init__(self, *, special: int = ord('%'), reserved: Iterable[int] = []):
         self.special = special
         self.to_encode = frozenset([special] + list(reserved))
 

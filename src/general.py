@@ -13,3 +13,11 @@ def iter_inhabited(it: Iterator[T]) -> (bool, Iterator[T]):
     except StopIteration:
         return (False, tuple())
     return (True, itertools.chain((x,), it))
+
+def iter_to_maybe(it: Iterator[T]) -> Optional[T]:
+    try:
+        x = next(it)
+    except StopIteration:
+        return None
+    () = it
+    return x

@@ -6,10 +6,11 @@ import logging
 from pathlib import Path
 import pymysql
 import requests
+import sys
 from typing import Any, Iterable, NoReturn, Optional, Tuple
 
 from instiki2git.percent_code import PercentCode
-from instiki2git.general import iter_inhabited
+from instiki2git.general import iter_inhabited, iter_to_maybe
 import instiki2git.git_tools as git
 
 logger: logging.Logger = logging.getLogger(__name__)
@@ -175,8 +176,9 @@ def load_commit_and_push(
     push: bool = False,
     html_mode: bool = False,
     include_ip: bool = False,
+    order_by_revised_at: bool = False,
     http_url: str = None,
-) -> NoReturn:
+) -> bool:
     """
     Arguments:
     * repo:
@@ -203,9 +205,16 @@ def load_commit_and_push(
     * include_ip:
         Whether to include the author IP in the commit message for each revision.
         Only used in source mode.
+    * order_by_revised_at:
+        Order commits by revision time instead of update time.
+        This checks that the last revisions in the selected time frame according to both orderings agree.
+        Only used in source mode.
+        Warning: if interrupted in between commits, the state of the backup repository will be undefined.
     * http_url:
         URL prefix to use for html backup.
         Only used in HTML mode.
+
+    Return false (and logs an error message) if failing preconditions prevent the operation.
     """
     pos = get_current_position(repo)
     logger.info(f'Current revision position: {pos}.')
@@ -236,23 +245,44 @@ def load_commit_and_push(
     join_revisions_r = 'join revisions r on r.id = idx.id'
     join_pages = 'join pages p on p.id = idx.page_id'
     constraint_str = 'where ' + ' and '.join(constraints)
-    order_str = 'order by idx.updated_at, idx.id'
 
-    if not html_mode:
-        select = 'select r.*, p.*'
-        query = f'{select} {from_revisions_idx} {join_revisions_r} {join_pages} {constraint_str} {order_str}'
-    else:
-        select = 'select idx.id, idx.updated_at, idx.page_id, p.name'
-        query = f'{select} {from_revisions_idx} {join_pages} {constraint_str} {order_str}'
+    def order_str(order_field, desc = False):
+        desc_str = ' desc' if desc else ''
+        return f'order by idx.{order_field}{desc_str}, idx.id{desc_str}'
+
+    def get_last_revision_id(order_field) -> Optional[int]:
+        query = f'select idx.id {from_revisions_idx} {constraint_str} {order_str(order_field, True)} limit 1'
+        return iter_to_maybe(r['id'] for r in query_iterator(cursor, query, params))
 
     time_before_query = datetime.now(timezone.utc)
     logger.debug(f'Time before query: {time_before_query}.')
+
+    if not html_mode:
+        if order_by_revised_at:
+            # Make sure last revisions according to both orderings agree.
+            last_revision_ids = {
+                order_field: get_last_revision_id(order_field)
+                for order_field in ['updated_at', 'revised_at']
+            }
+            logger.debug(f'Last revision ids: {last_revision_ids}')
+            if not len(frozenset(last_revision_ids.values())) == 1:
+                logger.error('Last revisions in selected time frame differ:')
+                for (order_field, id) in last_revision_ids.items():
+                    logger.error(f'* {order_field}: {id}')
+                return False
+
+        select = 'select r.*, p.*'
+        order_str = order_str('revised_at' if order_by_revised_at else 'updated_at')
+        query = f'{select} {from_revisions_idx} {join_revisions_r} {join_pages} {constraint_str} {order_str}'
+    else:
+        select = 'select idx.id, idx.updated_at, idx.page_id, p.name'
+        query = f'{select} {from_revisions_idx} {join_pages} {constraint_str} {order_str("updated_at")}'
 
     revisions = query_iterator(cursor, query, params)
     (updated, revisions) = iter_inhabited(revisions)
     if not updated:
         logger.info('No new revisions found.')
-        return
+        return True
 
     time_after_first_result = datetime.now(timezone.utc)
     time_delta = time_after_first_result - time_before_query
@@ -318,6 +348,8 @@ def load_commit_and_push(
         logger.info('Pushing repository.')
         dulwich.porcelain.push(repo = repo)
 
+    return True
+
 # Command-line interface.
 def cli() -> NoReturn:
     parser = argparse.ArgumentParser(
@@ -349,9 +381,14 @@ For this to work, the current branch must have a default push remote set up.
     parser.add_argument('--html', action = 'store_true', help = 'Back up HTML instead of source.')
 
     g = parser.add_argument_group(title = 'source backup options')
-    parser.add_argument('--include-ip', action = 'store_true', help = '''
+    g.add_argument('--include-ip', action = 'store_true', help = '''
 Include author IP in the commit message for each revision.
-g''')
+''')
+    g.add_argument('--order-by-rev-time', action = 'store_true', help = '''
+Order commits by revision time instead of update time.
+This checks that the last revisions in the selected time frame according to both orderings agree.
+Warning: if interrupted in between commits, the state of the backup repository will be undefined.
+''')
 
     g = parser.add_argument_group(title = 'HTML backup options')
     g.add_argument('--http-url', type = str, metavar = 'URL', default = 'http://localhost', help = '''
@@ -419,7 +456,7 @@ Print informational (specify once) or debug (specify twice) messages on stderr.
     )
     cursor: pymysql.cursors.DictCursorMixin = connection.cursor()
 
-    load_commit_and_push(
+    if not load_commit_and_push(
         repo,
         cursor,
         args.web_id,
@@ -428,5 +465,7 @@ Print informational (specify once) or debug (specify twice) messages on stderr.
         push = args.push,
         http_url = args.http_url,
         include_ip = args.include_ip,
+        order_by_revised_at = args.order_by_rev_time,
         html_mode = args.html
-    )
+    ):
+        sys.exit(1)
