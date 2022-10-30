@@ -48,6 +48,12 @@ Depending on where we store something, we use a percent encoding for reserved ch
 
 * Commit messages are lines of the form "<key>: <value>" with `\0` and `\n` reserved in key and value and additionally `:` reserved in the key.
 
+### Compacting the backup repository
+
+After committing a large number of revisions, it can be beneficial to run `git gc` in the backup repository.
+This packs and compresses similar blobs.
+It can reduce in a storage by a factor of ten.
+
 ## Tutorial
 
 Create and move to an empty directory.
