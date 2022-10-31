@@ -1,6 +1,7 @@
 import argparse
 from datetime import datetime, timedelta, timezone
 import dulwich.objects
+import dulwich.porcelain
 import dulwich.repo
 import logging
 from pathlib import Path
