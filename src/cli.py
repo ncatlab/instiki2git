@@ -346,8 +346,8 @@ def load_commit_and_push(
                 author_time = time_before_query,
             )
 
-    if push:
-        with git.Repo(repo.path) as r:
+    with git.Repo(repo.path) as r:
+        if push:
             branch = r.head.ref
             branch_remote = branch.tracking_branch()
             if branch_remote.commit == branch.commit:
