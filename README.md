@@ -50,9 +50,8 @@ Depending on where we store something, we use a percent encoding for reserved ch
 
 ### Compacting the backup repository
 
-After committing a large number of revisions, it can be beneficial to run `git gc` in the backup repository.
-This packs and compresses similar blobs.
-It can reduce storage by a factor of more than ten.
+The script takes care of compacting the backup repository via `git gc --auto`.
+Given many similar revisions, this can reduce storage by an order of magnitude.
 
 ## Tutorial
 
