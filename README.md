@@ -53,6 +53,13 @@ Depending on where we store something, we use a percent encoding for reserved ch
 The script takes care of compacting the backup repository via `git gc --auto`.
 Given many similar revisions, this can reduce storage by an order of magnitude.
 
+### Page names may not be accurate
+
+The page name recorded in a revision commit may not reflect the page name at the time the revision was made.
+This is due to the design of Instiki.
+
+See [this issue](https://github.com/ncatlab/instiki2git/issues/5).
+
 ## Tutorial
 
 Create and move to an empty directory.
