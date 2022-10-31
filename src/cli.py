@@ -1,14 +1,15 @@
 import argparse
 from datetime import datetime, timedelta, timezone
+import logging
+from pathlib import Path
+import sys
+from typing import Any, Iterable, NoReturn, Optional, Tuple
+
 import dulwich.objects
 import dulwich.porcelain
 import dulwich.repo
-import logging
-from pathlib import Path
-import pymysql
 import requests
-import sys
-from typing import Any, Iterable, NoReturn, Optional, Tuple
+import pymysql
 
 from instiki2git.percent_code import PercentCode
 from instiki2git.general import iter_inhabited, iter_to_maybe
