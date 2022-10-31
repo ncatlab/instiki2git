@@ -8,12 +8,13 @@ from typing import Any, Iterable, NoReturn, Optional, Tuple
 import dulwich.objects
 import dulwich.porcelain
 import dulwich.repo
+import git
 import requests
 import pymysql
 
 from instiki2git.percent_code import PercentCode
 from instiki2git.general import iter_inhabited, iter_to_maybe
-import instiki2git.git_tools as git
+import instiki2git.git_tools as git_tools
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -85,7 +86,7 @@ def commit_values_position_decode(values: dict[str, str]) -> Position:
 
 # git functions.
 
-git_script_identity: bytes = git.identity_with_empty_email(b'instiki2git')
+git_script_identity: bytes = git_tools.identity_with_empty_email(b'instiki2git')
 
 def git_commit(
     repo: dulwich.repo.Repo,
@@ -100,21 +101,21 @@ def git_commit(
     Entries are iterated over before the commit values.
     An optional author (without email) can be given.
     """
-    commit_prev: dulwich.repo.Commit = git.get_commit(repo, repo.head())
+    commit_prev: dulwich.repo.Commit = git_tools.get_commit(repo, repo.head())
     logger.debug(f'Previous commit: {commit_prev.id}')
 
     logger.debug('Creating tree.')
     tree = repo.get_object(commit_prev.tree)
     for (path, obj) in entries:
-        tree = git.tree_replace_nested(repo, tree, path, obj)
+        tree = git_tools.tree_replace_nested(repo, tree, path, obj)
 
     logger.debug('Committing.')
     repo.do_commit(
         tree = tree.id,
         message = commit_message_encode(dict(commit_values)),
         committer = git_script_identity,
-        author = None if author is None else git.identity_with_empty_email(
-            git.identity_code.encode(author.encode('utf8'))
+        author = None if author is None else git_tools.identity_with_empty_email(
+            git_tools.identity_code.encode(author.encode('utf8'))
         ),
         author_timestamp = None if author_time is None else author_time.timestamp(),
     )
@@ -124,7 +125,7 @@ def get_current_position(repo: dulwich.repo.Repo) -> Optional[Position]:
     Return the tuple of (updated_at, id) for the revision encoded by the head commit.
     Returns None if the head commit is the initial commit.
     """
-    commit = git.get_commit(repo, repo.head())
+    commit = git_tools.get_commit(repo, repo.head())
     if commit.message.lower().startswith(b'initial commit'):
         return None
 
@@ -291,14 +292,14 @@ def load_commit_and_push(
     logger.info(f'Time until first query result: {time_delta / timedelta(microseconds = 1000)} ms')
 
     def git_path(page_id) -> list[bytes]:
-        return git.path(Path('pages') / partition_id(partition_sizes, page_id) / str(page_id))
+        return git_tools.path(Path('pages') / partition_id(partition_sizes, page_id) / str(page_id))
 
     if not html_mode:
         for revision in revisions:
             id = revision['id']
             logger.info(f'Committing revision {id}.')
 
-            tree = git.add_flat_tree(repo, [
+            tree = git_tools.add_flat_tree(repo, [
                 (b'content.md', revision['content'].encode('utf8')),
                 (b'name', revision['name'].encode('utf8'))
             ])
@@ -327,7 +328,7 @@ def load_commit_and_push(
                 logger.info(f'Updating HTML for page {page_id}')
                 logger.debug(f'Revision {revision["id"]}, updated at {revision["updated_at"]}.')
 
-                tree = git.add_flat_tree(repo, [
+                tree = git_tools.add_flat_tree(repo, [
                     (b'content.html', download_page(session, address_base + str(page_id))),
                     (b'revision_id', str(revision['id']).encode('utf8')),
                     (b'name', revision['name'].encode('utf8')),
@@ -348,7 +349,8 @@ def load_commit_and_push(
 
     if push:
         logger.info('Pushing repository.')
-        dulwich.porcelain.push(repo = repo)
+        with git.Repo(repo.path) as r:
+            r.git.push()
 
     return True
 
