@@ -52,7 +52,7 @@ Depending on where we store something, we use a percent encoding for reserved ch
 
 After committing a large number of revisions, it can be beneficial to run `git gc` in the backup repository.
 This packs and compresses similar blobs.
-It can reduce in a storage by a factor of ten.
+It can reduce storage by a factor of more than ten.
 
 ## Tutorial
 
