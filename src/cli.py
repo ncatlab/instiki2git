@@ -285,72 +285,76 @@ def load_commit_and_push(
     (updated, revisions) = iter_inhabited(revisions)
     if not updated:
         logger.info('No new revisions found.')
-        return True
+    else:
+        time_after_first_result = datetime.now(timezone.utc)
+        time_delta = time_after_first_result - time_before_query
+        logger.info(f'Time until first query result: {time_delta / timedelta(microseconds = 1000)} ms')
 
-    time_after_first_result = datetime.now(timezone.utc)
-    time_delta = time_after_first_result - time_before_query
-    logger.info(f'Time until first query result: {time_delta / timedelta(microseconds = 1000)} ms')
+        def git_path(page_id) -> list[bytes]:
+            return git_tools.path(Path('pages') / partition_id(partition_sizes, page_id) / str(page_id))
 
-    def git_path(page_id) -> list[bytes]:
-        return git_tools.path(Path('pages') / partition_id(partition_sizes, page_id) / str(page_id))
+        if not html_mode:
+            for revision in revisions:
+                id = revision['id']
+                logger.info(f'Committing revision {id}.')
 
-    if not html_mode:
-        for revision in revisions:
-            id = revision['id']
-            logger.info(f'Committing revision {id}.')
+                tree = git_tools.add_flat_tree(repo, [
+                    (b'content.md', revision['content'].encode('utf8')),
+                    (b'name', revision['name'].encode('utf8'))
+                ])
 
-            tree = git_tools.add_flat_tree(repo, [
-                (b'content.md', revision['content'].encode('utf8')),
-                (b'name', revision['name'].encode('utf8'))
-            ])
+                def commit_values():
+                    yield from commit_values_position_encode(revision_position(revision))
+                    yield ('Page name', revision['name'])
+                    if include_ip:
+                        yield ('IP address', revision['ip'])
 
+                git_commit(
+                    repo = repo,
+                    entries = [(git_path(revision['page_id']), tree)],
+                    commit_values = commit_values(),
+                    author = revision['author'],
+                    author_time = revision_datetime(revision, 'revised_at'),
+                )
+        else:
+            to_update = {revision['page_id']: revision for revision in revisions}
+            session = requests.Session()
+            address_base = f'{http_url}/{web_address}/show_by_id/'
+
+            def entries():
+                nonlocal revision
+                for (page_id, revision) in to_update.items():
+                    logger.info(f'Updating HTML for page {page_id}')
+                    logger.debug(f'Revision {revision["id"]}, updated at {revision["updated_at"]}.')
+
+                    tree = git_tools.add_flat_tree(repo, [
+                        (b'content.html', download_page(session, address_base + str(page_id))),
+                        (b'revision_id', str(revision['id']).encode('utf8')),
+                        (b'name', revision['name'].encode('utf8')),
+                    ])
+                    yield (git_path(page_id), tree)
+
+            # Iterated over after entries.
             def commit_values():
                 yield from commit_values_position_encode(revision_position(revision))
-                yield ('Page name', revision['name'])
-                if include_ip:
-                    yield ('IP address', revision['ip'])
+                yield ('Comment', f'updated {len(to_update)} pages')
 
             git_commit(
                 repo = repo,
-                entries = [(git_path(revision['page_id']), tree)],
+                entries = entries(),
                 commit_values = commit_values(),
-                author = revision['author'],
-                author_time = revision_datetime(revision, 'revised_at'),
+                author_time = time_before_query,
             )
-    else:
-        to_update = {revision['page_id']: revision for revision in revisions}
-        session = requests.Session()
-        address_base = f'{http_url}/{web_address}/show_by_id/'
-
-        def entries():
-            nonlocal revision
-            for (page_id, revision) in to_update.items():
-                logger.info(f'Updating HTML for page {page_id}')
-                logger.debug(f'Revision {revision["id"]}, updated at {revision["updated_at"]}.')
-
-                tree = git_tools.add_flat_tree(repo, [
-                    (b'content.html', download_page(session, address_base + str(page_id))),
-                    (b'revision_id', str(revision['id']).encode('utf8')),
-                    (b'name', revision['name'].encode('utf8')),
-                ])
-                yield (git_path(page_id), tree)
-
-        # Iterated over after entries.
-        def commit_values():
-            yield from commit_values_position_encode(revision_position(revision))
-            yield ('Comment', f'updated {len(to_update)} pages')
-
-        git_commit(
-            repo = repo,
-            entries = entries(),
-            commit_values = commit_values(),
-            author_time = time_before_query,
-        )
 
     if push:
-        logger.info('Pushing repository.')
         with git.Repo(repo.path) as r:
-            r.git.push()
+            branch = r.head.ref
+            branch_remote = branch.tracking_branch()
+            if branch_remote.commit == branch.commit:
+                logger.info('No push needed (remote is up to date).')
+            else:
+                logger.info('Pushing repository.')
+                r.git.push()
 
     return True
 
